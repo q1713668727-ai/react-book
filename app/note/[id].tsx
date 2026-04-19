@@ -4,6 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image as RNImage,
+  FlatList,
+  Keyboard,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -20,7 +23,12 @@ import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
 import { useAuth } from '@/contexts/auth-context';
 import { useThemeColor } from '@/hooks/use-theme-color';
-import { postJson } from '@/lib/post-json';
+import { postJson, postPublicJson } from '@/lib/post-json';
+import CommentIcon from '@/public/icon/pinglun.svg';
+import CollectedIcon from '@/public/icon/shoucang.svg';
+import UncollectedIcon from '@/public/icon/shoucang_1.svg';
+import LikedIcon from '@/public/icon/xihuan.svg';
+import UnlikedIcon from '@/public/icon/xihuan_1.svg';
 
 type NoteCommentDto = {
   id?: number | string;
@@ -131,6 +139,7 @@ export default function NoteDetailScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const carouselRef = useRef<ScrollView>(null);
+  const commentInputRef = useRef<TextInput>(null);
   const { id } = useLocalSearchParams<{ id: string }>();
   const { user } = useAuth();
   const border = useThemeColor({ light: '#E5E5E5', dark: '#2C2C2E' }, 'text');
@@ -141,6 +150,7 @@ export default function NoteDetailScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [liking, setLiking] = useState(false);
   const [collecting, setCollecting] = useState(false);
+  const [commentVisible, setCommentVisible] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [commentText, setCommentText] = useState('');
   const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
@@ -156,7 +166,7 @@ export default function NoteDetailScreen() {
 
     try {
       const [detailRes, userInfoRes] = await Promise.all([
-        postJson<NoteDetailDto>('/noteDetail', { id }),
+        postPublicJson<NoteDetailDto>('/noteDetail', { id }),
         user?.account
           ? postJson<UserInfoDto>('/user/getUserInfo', { account: user.account })
           : Promise.resolve({ result: { likes: '', collects: '' } as UserInfoDto }),
@@ -202,6 +212,7 @@ export default function NoteDetailScreen() {
       });
 
       setCommentText('');
+      setCommentVisible(false);
       setError(null);
 
       if (result) {
@@ -297,6 +308,15 @@ export default function NoteDetailScreen() {
   useEffect(() => {
     void loadDetail();
   }, [id, user?.account]);
+
+  useEffect(() => {
+    if (!commentVisible) return;
+    const keyboardSub = Keyboard.addListener('keyboardDidHide', () => {
+      setCommentVisible(false);
+    });
+
+    return () => keyboardSub.remove();
+  }, [commentVisible]);
 
   useEffect(() => {
     const imageUris = note?.imageUris ?? [];
@@ -509,36 +529,95 @@ export default function NoteDetailScreen() {
         ) : null}
 
         <View style={[styles.inputBar, { borderTopColor: border, backgroundColor: '#FFFFFF' }]}>
-          <TextInput
-            style={[styles.input, { borderColor: border, color: '#FFFFFF' }]}
-            editable={Boolean(user) && !submitting}
-            placeholder={user ? '写下你的评论...' : '登录后可评论'}
-            placeholderTextColor={muted}
-            value={commentText}
-            onChangeText={(text) => {
-              if (error) setError(null);
-              setCommentText(text);
-            }}
-          />
+          <Pressable style={[styles.inputGhost, { borderColor: border }]} onPress={() => setCommentVisible(true)}>
+            <ThemedText style={[styles.inputGhostText, { color: muted }]}>{user ? '说点什么...' : '登录后可评论'}</ThemedText>
+          </Pressable>
           <Pressable style={[styles.actionBtn, { opacity: liking ? 0.6 : 1 }]} disabled={liking} onPress={() => void toggleLike()}>
-            <ThemedText style={[styles.actionText, { color: note?.liked ? '#FF2442' : muted }]}>{note?.liked ? '♥' : '♡'} {note?.likes ?? 0}</ThemedText>
+            {note?.liked ? <LikedIcon width={22} height={22} color="#FF2442" /> : <UnlikedIcon width={22} height={22} color={muted} />}
+            <ThemedText style={[styles.actionText, { color: note?.liked ? '#FF2442' : muted }]}>{note?.likes ? note.likes : '点赞'}</ThemedText>
           </Pressable>
           <Pressable style={[styles.actionBtn, { opacity: collecting ? 0.6 : 1 }]} disabled={collecting} onPress={() => void toggleCollect()}>
-            <ThemedText style={[styles.actionText, { color: note?.collected ? '#FF2442' : muted }]}>{note?.collected ? '★' : '☆'} {note?.collects ?? 0}</ThemedText>
+            {note?.collected ? <CollectedIcon width={22} height={22} color="#FF2442" /> : <UncollectedIcon width={22} height={22} color={muted} />}
+            <ThemedText style={[styles.actionText, { color: note?.collected ? '#FF2442' : muted }]}>{note?.collects ? note.collects : '收藏'}</ThemedText>
           </Pressable>
           <Pressable
-            style={[styles.submitBtn, { opacity: user && commentText.trim() && !submitting ? 1 : 0.5 }]}
+            style={[styles.actionBtn, { opacity: submitting ? 0.6 : 1 }]}
             disabled={submitting}
             onPress={() => {
-              if (!user) {
-                router.push('/login');
-                return;
-              }
-              void submitComment();
+              setCommentVisible(true);
             }}>
-            <ThemedText style={styles.submitText}>{submitting ? '发送中' : '发送'}</ThemedText>
+            <CommentIcon width={22} height={22} color={muted} />
+            <ThemedText style={[styles.actionText, { color: muted }]}>{note?.comments.length ? note.comments.length : '评论'}</ThemedText>
           </Pressable>
         </View>
+
+        <Modal
+          visible={commentVisible}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setCommentVisible(false)}
+          onShow={() => {
+            if (!user?.account) return;
+            setTimeout(() => commentInputRef.current?.focus(), 80);
+          }}>
+          <Pressable style={styles.mask} onPress={() => setCommentVisible(false)} />
+          <View style={styles.commentPanel}>
+            <View style={styles.panelHeader}>
+              <ThemedText style={styles.panelTitle}>共 {note?.comments.length ?? 0} 条评论</ThemedText>
+              <Pressable onPress={() => setCommentVisible(false)}>
+                <ThemedText style={[styles.metaText, { color: muted }]}>关闭</ThemedText>
+              </Pressable>
+            </View>
+
+            <FlatList
+              data={note?.comments ?? []}
+              keyExtractor={(item, index) => `${item.id}-${index}`}
+              contentContainerStyle={styles.panelList}
+              ListEmptyComponent={<ThemedText style={[styles.stateText, { color: muted }]}>还没有评论，快来抢沙发</ThemedText>}
+              renderItem={({ item }) => (
+                <View style={styles.panelCommentItem}>
+                  {item.avatarUri ? (
+                    <ExpoImage source={{ uri: item.avatarUri }} style={styles.panelCommentAvatar} contentFit="cover" />
+                  ) : (
+                    <View style={[styles.panelCommentAvatar, styles.avatarFallback]} />
+                  )}
+                  <View style={styles.panelCommentMain}>
+                    <ThemedText style={styles.panelCommentName}>{item.name}</ThemedText>
+                    <ThemedText style={styles.panelCommentText}>{item.text}</ThemedText>
+                    <ThemedText style={[styles.metaText, { color: muted }]}>{[item.date, item.location].filter(Boolean).join(' · ')}</ThemedText>
+                  </View>
+                </View>
+              )}
+            />
+
+            <View style={styles.panelInputRow}>
+              <TextInput
+                ref={commentInputRef}
+                style={styles.panelInput}
+                editable={Boolean(user) && !submitting}
+                placeholder={user ? '写下你的评论...' : '登录后可评论'}
+                placeholderTextColor={muted}
+                value={commentText}
+                onChangeText={(text) => {
+                  if (error) setError(null);
+                  setCommentText(text);
+                }}
+              />
+              <Pressable
+                style={[styles.sendBtn, { opacity: user && commentText.trim() && !submitting ? 1 : 0.5 }]}
+                disabled={submitting}
+                onPress={() => {
+                  if (!user) {
+                    router.push('/login');
+                    return;
+                  }
+                  void submitComment();
+                }}>
+                <ThemedText style={styles.sendText}>{submitting ? '发送中' : '发送'}</ThemedText>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
       </ThemedView>
     </SafeAreaView>
   );
@@ -580,7 +659,7 @@ const styles = StyleSheet.create({
   commentBody: { flex: 1, gap: 6 },
   commentTop: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
   commentName: { fontSize: 14, fontWeight: '600' },
-  commentText: { fontSize: 14, lineHeight: 22, color: '#FFFFFF' },
+  commentText: { fontSize: 14, lineHeight: 22, color: '#1F2329' },
   inlineError: { paddingHorizontal: 16, paddingBottom: 8 },
   inputBar: {
     position: 'absolute',
@@ -595,9 +674,22 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
     borderTopWidth: StyleSheet.hairlineWidth,
   },
-  input: { flex: 1, minHeight: 42, borderWidth: StyleSheet.hairlineWidth, borderRadius: 21, paddingHorizontal: 14, fontSize: 14 },
-  actionBtn: { minWidth: 52, height: 36, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
-  actionText: { fontSize: 14, fontWeight: '700' },
-  submitBtn: { minWidth: 64, alignItems: 'center', justifyContent: 'center', borderRadius: 21, backgroundColor: '#FF2442', paddingHorizontal: 16, height: 36 },
-  submitText: { color: '#FFF', fontSize: 14, fontWeight: '600' },
+  inputGhost: { flex: 1, minHeight: 42, borderWidth: StyleSheet.hairlineWidth, borderRadius: 21, paddingHorizontal: 14, justifyContent: 'center' },
+  inputGhostText: { fontSize: 14 },
+  actionBtn: { minWidth: 62, height: 40, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, flexDirection: 'row', gap: 4 },
+  actionText: { fontSize: 15, fontWeight: '700' },
+  mask: { flex: 1, backgroundColor: 'transparent' },
+  commentPanel: { maxHeight: '70%', backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 14 },
+  panelHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#ECECEC' },
+  panelTitle: { fontSize: 15, fontWeight: '700', color: '#1D1F24' },
+  panelList: { paddingVertical: 10, gap: 12 },
+  panelCommentItem: { flexDirection: 'row', gap: 10 },
+  panelCommentAvatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#EEF1F6' },
+  panelCommentMain: { flex: 1, gap: 4 },
+  panelCommentName: { color: '#5A6270', fontSize: 13 },
+  panelCommentText: { color: '#1F2329', fontSize: 14, lineHeight: 20 },
+  panelInputRow: { flexDirection: 'row', alignItems: 'center', gap: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#ECECEC', paddingTop: 10 },
+  panelInput: { flex: 1, height: 40, borderRadius: 20, backgroundColor: '#F5F6F8', paddingHorizontal: 12, fontSize: 14, color: '#1F2329' },
+  sendBtn: { width: 64, height: 36, borderRadius: 18, backgroundColor: '#FF4F72', alignItems: 'center', justifyContent: 'center' },
+  sendText: { color: '#FFF', fontSize: 13, fontWeight: '700' },
 });

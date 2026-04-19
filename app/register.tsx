@@ -51,7 +51,7 @@ export default function RegisterScreen() {
         email: email.trim(),
         password,
       });
-      router.replace('/(tabs)/profile');
+      router.replace('/profile');
     } catch (e) {
       setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : '注册失败');
     } finally {

@@ -1,10 +1,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { router } from 'expo-router';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { Alert } from 'react-native';
 
+import { subscribeAuthSessionExpired } from '@/lib/auth-session-events';
 import { postJson } from '@/lib/post-json';
 import type { AuthUser } from '@/types/auth';
 
 const STORAGE_KEY = '@auth_user';
+const TOKEN_KEY = '@auth_token';
+const TOKEN_EXPIRE_KEY = '@auth_token_expire_at';
 
 type AuthContextValue = {
   user: AuthUser | null;
@@ -19,14 +24,21 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 async function persistUser(user: AuthUser | null) {
   if (user) {
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(user));
+    if (user.token) {
+      await AsyncStorage.setItem(TOKEN_KEY, String(user.token));
+    }
+    if (user.tokenExpireAt) {
+      await AsyncStorage.setItem(TOKEN_EXPIRE_KEY, String(user.tokenExpireAt));
+    }
   } else {
-    await AsyncStorage.removeItem(STORAGE_KEY);
+    await AsyncStorage.multiRemove([STORAGE_KEY, TOKEN_KEY, TOKEN_EXPIRE_KEY]);
   }
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isReady, setIsReady] = useState(false);
+  const sessionAlertVisibleRef = React.useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -47,22 +59,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const applyLoginResult = useCallback(async (result: AuthUser) => {
-    setUser(result);
-    await persistUser(result);
+  const applyLoginResult = useCallback(async (result: AuthUser, token?: string, tokenExpireAt?: string | number) => {
+    const nextUser: AuthUser = {
+      ...result,
+      token: token ?? result.token,
+      tokenExpireAt: tokenExpireAt != null ? String(tokenExpireAt) : result.tokenExpireAt != null ? String(result.tokenExpireAt) : undefined,
+    };
+    setUser(nextUser);
+    await persistUser(nextUser);
   }, []);
 
   const signIn = useCallback(
     async (account: string, password: string) => {
       const trimmed = account.trim();
-      const { result } = await postJson<AuthUser>('/login', {
+      const { result, token, tokenExpireAt } = await postJson<AuthUser>('/login', {
         account: trimmed,
         password,
       });
       if (!result || typeof result !== 'object') {
         throw new Error('登录未返回用户数据');
       }
-      await applyLoginResult(result as AuthUser);
+      await applyLoginResult(result as AuthUser, token, tokenExpireAt);
     },
     [applyLoginResult]
   );
@@ -85,6 +102,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     await persistUser(null);
   }, []);
+
+  useEffect(() => {
+    return subscribeAuthSessionExpired((message) => {
+      if (sessionAlertVisibleRef.current) return;
+      sessionAlertVisibleRef.current = true;
+
+      Alert.alert(
+        '登录提醒',
+        message || '你的账号已在其他设备登录，请重新登录。',
+        [
+          {
+            text: '确定',
+            onPress: () => {
+              void (async () => {
+                await signOut();
+                sessionAlertVisibleRef.current = false;
+                router.replace('/login');
+              })();
+            },
+          },
+        ],
+        { cancelable: false }
+      );
+    });
+  }, [signOut]);
 
   const value = useMemo(
     () => ({

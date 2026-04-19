@@ -1,0 +1,5 @@
+{
+  "replaceAttrValues": {
+    "#3D3D3D": "{props.color}"
+  }
+}

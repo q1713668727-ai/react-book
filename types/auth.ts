@@ -5,5 +5,7 @@ export type AuthUser = {
   email?: string;
   url?: string;
   sign?: string;
+  token?: string;
+  tokenExpireAt?: string;
   [key: string]: unknown;
 };

@@ -1,23 +1,29 @@
-﻿import { Tabs } from 'expo-router';
+import { Tabs, useRouter } from 'expo-router';
 import React from 'react';
+import { Image, Pressable, StyleSheet } from 'react-native';
 
 import { HapticTab } from '@/components/haptic-tab';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useAuth } from '@/contexts/auth-context';
+import PlayIcon from '@/public/icon/bofang.svg';
+import HomeIcon from '@/public/icon/home.svg';
+import CommentIcon from '@/public/icon/pinglun.svg';
+import ProfileIcon from '@/public/icon/wode.svg';
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
-  const palette = Colors[colorScheme ?? 'light'];
+  const router = useRouter();
+  const { user } = useAuth();
 
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: '#FFFFFF',
-        tabBarInactiveTintColor: '#8E8E93',
+        tabBarActiveTintColor: '#111111',
+        tabBarInactiveTintColor: '#9D9D9D',
         tabBarStyle: {
-          backgroundColor: '#111111',
-          borderTopColor: '#1C1C1E',
+          backgroundColor: '#FFFFFF',
+          borderTopColor: '#EEEEEE',
+          height: 56,
+          paddingTop: 6,
+          paddingBottom: 6,
         },
         headerShown: false,
         tabBarButton: HapticTab,
@@ -26,30 +32,55 @@ export default function TabLayout() {
         name="index"
         options={{
           title: '首页',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
+          tabBarIcon: ({ color }) => <HomeIcon width={28} height={28} color={color} />,
         }}
       />
       <Tabs.Screen
         name="video"
         options={{
           title: '视频',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="play.rectangle.fill" color={color} />,
+          tabBarStyle: { display: 'none' },
+          tabBarIcon: ({ color }) => <PlayIcon width={28} height={28} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="add"
+        options={{
+          title: '',
+          tabBarButton: () => (
+            <Pressable style={styles.addBtn} onPress={() => router.push(user?.account ? '/publish' : '/login')}>
+              <Image source={require('../../public/image/tianjia.png')} style={styles.addIcon} />
+            </Pressable>
+          ),
         }}
       />
       <Tabs.Screen
         name="chat"
         options={{
           title: '消息',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="bubble.left.and.bubble.right.fill" color={color} />,
+          tabBarIcon: ({ color }) => <CommentIcon width={28} height={28} color={color} />,
         }}
       />
       <Tabs.Screen
         name="profile"
         options={{
           title: '我',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="person.fill" color={color} />,
+          tabBarIcon: ({ color }) => <ProfileIcon width={28} height={28} color={color} />,
         }}
       />
     </Tabs>
   );
 }
+
+const styles = StyleSheet.create({
+  addBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addIcon: {
+    width: 44,
+    height: 44,
+    resizeMode: 'contain',
+  },
+});

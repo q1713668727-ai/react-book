@@ -1,8 +1,8 @@
 /**
  * API 基址：优先 `EXPO_PUBLIC_API_URL`（.env 或构建环境），默认本机 Express。
- * 真机请改为电脑局域网 IP，如 http://192.168.1.5:8000；Android 模拟器可用 http://10.0.2.2:8000。
+ * 默认使用局域网地址 `http://192.168.1.4:8000`。
  */
-const raw = (process.env.EXPO_PUBLIC_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '');
+const raw = (process.env.EXPO_PUBLIC_API_URL ?? 'http://192.168.1.4:8000').replace(/\/$/, '');
 
 export function getApiBaseUrl(): string {
   return raw;

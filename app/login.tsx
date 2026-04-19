@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { useState } from 'react';
 import {
   ActivityIndicator,
@@ -7,7 +7,6 @@ import {
   Pressable,
   StyleSheet,
   TextInput,
-  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -19,7 +18,7 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { signIn } = useAuth();
+  const { signIn, signOut } = useAuth();
   const [account, setAccount] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -39,7 +38,7 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       await signIn(account, password);
-      router.replace('/(tabs)/profile');
+      router.replace('/profile');
     } catch (e) {
       setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : '登录失败');
     } finally {
@@ -47,8 +46,22 @@ export default function LoginScreen() {
     }
   };
 
+  const onGuestVisit = async () => {
+    await signOut();
+    router.replace('/');
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
+      <Stack.Screen
+        options={{
+          headerRight: () => (
+            <Pressable hitSlop={10} onPress={() => void onGuestVisit()}>
+              <ThemedText style={styles.guestText}>游客访问</ThemedText>
+            </Pressable>
+          ),
+        }}
+      />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.flex}>
@@ -151,5 +164,10 @@ const styles = StyleSheet.create({
   },
   link: {
     fontSize: 15,
+  },
+  guestText: {
+    color: '#FF2442',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
