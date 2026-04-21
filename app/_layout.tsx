@@ -14,9 +14,15 @@ export default function RootLayout() {
       <ThemeProvider value={DefaultTheme}>
         <Stack>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="product/[id]" options={{ headerShown: false }} />
+          <Stack.Screen name="shop/[id]" options={{ headerShown: false }} />
+          <Stack.Screen name="cart" options={{ headerShown: false }} />
+          <Stack.Screen name="product-service" options={{ headerShown: false }} />
+          <Stack.Screen name="market-category" options={{ headerShown: false }} />
           <Stack.Screen name="note/[id]" options={{ title: '笔记详情' }} />
           <Stack.Screen name="chat/[id]" options={{ title: '聊天' }} />
           <Stack.Screen name="user/[account]" options={{ title: '用户主页' }} />
+          <Stack.Screen name="search" options={{ headerShown: false }} />
           <Stack.Screen name="find" options={{ title: '发现' }} />
           <Stack.Screen name="follow-fans" options={{ title: '关注与粉丝' }} />
           <Stack.Screen name="settings" options={{ headerShown: false }} />

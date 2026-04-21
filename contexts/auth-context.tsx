@@ -1,15 +1,11 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { Alert } from 'react-native';
 
 import { subscribeAuthSessionExpired } from '@/lib/auth-session-events';
 import { postJson } from '@/lib/post-json';
+import { AUTH_TOKEN_EXPIRE_KEY, AUTH_TOKEN_KEY, AUTH_USER_KEY, getString, hydrateStorage, removeString, setString } from '@/lib/storage';
 import type { AuthUser } from '@/types/auth';
-
-const STORAGE_KEY = '@auth_user';
-const TOKEN_KEY = '@auth_token';
-const TOKEN_EXPIRE_KEY = '@auth_token_expire_at';
 
 type AuthContextValue = {
   user: AuthUser | null;
@@ -23,15 +19,17 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 async function persistUser(user: AuthUser | null) {
   if (user) {
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(user));
+    setString(AUTH_USER_KEY, JSON.stringify(user));
     if (user.token) {
-      await AsyncStorage.setItem(TOKEN_KEY, String(user.token));
+      setString(AUTH_TOKEN_KEY, String(user.token));
     }
     if (user.tokenExpireAt) {
-      await AsyncStorage.setItem(TOKEN_EXPIRE_KEY, String(user.tokenExpireAt));
+      setString(AUTH_TOKEN_EXPIRE_KEY, String(user.tokenExpireAt));
     }
   } else {
-    await AsyncStorage.multiRemove([STORAGE_KEY, TOKEN_KEY, TOKEN_EXPIRE_KEY]);
+    removeString(AUTH_USER_KEY);
+    removeString(AUTH_TOKEN_KEY);
+    removeString(AUTH_TOKEN_EXPIRE_KEY);
   }
 }
 
@@ -44,12 +42,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     (async () => {
       try {
-        const raw = await AsyncStorage.getItem(STORAGE_KEY);
+        await hydrateStorage([AUTH_USER_KEY, AUTH_TOKEN_KEY, AUTH_TOKEN_EXPIRE_KEY]);
+        const raw = getString(AUTH_USER_KEY);
         if (!cancelled && raw) {
           setUser(JSON.parse(raw) as AuthUser);
         }
       } catch {
-        await AsyncStorage.removeItem(STORAGE_KEY);
+        removeString(AUTH_USER_KEY);
       } finally {
         if (!cancelled) setIsReady(true);
       }

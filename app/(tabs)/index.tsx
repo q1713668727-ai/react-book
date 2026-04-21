@@ -291,7 +291,7 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ThemedView style={styles.root}>
         <View style={styles.topBar}>
-          <Pressable style={styles.searchBtn} onPress={() => router.push('/find')}>
+          <Pressable style={styles.searchBtn} onPress={() => router.push('/search')}>
             <ScanIcon width={24} height={24} color="#2C2C2C" />
           </Pressable>
           <View style={styles.tabsNav}>
@@ -305,7 +305,7 @@ export default function HomeScreen() {
               );
             })}
           </View>
-          <Pressable style={styles.searchBtn} onPress={() => router.push('/find')}>
+          <Pressable style={styles.searchBtn} onPress={() => router.push('/search')}>
             <SearchIcon width={24} height={24} color="#2C2C2C" />
           </Pressable>
         </View>

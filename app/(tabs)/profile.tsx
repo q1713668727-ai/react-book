@@ -2,6 +2,7 @@ import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import {
   ActivityIndicator,
   Animated,
@@ -33,6 +34,31 @@ import type { AuthUser } from '@/types/auth';
 const defaultAvatar = require('../../public/image/avatar.jpg');
 const emptyNoteImage = require('../../public/image/null.png');
 const emptyCollectImage = require('../../public/image/collect.png');
+
+type SideMenuItem = {
+  title: string;
+  icon: string;
+  family?: 'feather' | 'material';
+  route?: '/find' | '/settings';
+};
+
+const SIDE_MENU_ITEMS: SideMenuItem[] = [
+  { title: '发现好友', icon: 'user-plus', route: '/find' },
+  { title: '浏览记录', icon: 'clock' },
+  { title: '钱包', icon: 'credit-card' },
+  { title: '好物体验', icon: 'gift' },
+  { title: '订单', icon: 'clipboard' },
+  { title: '购物车', icon: 'shopping-cart' },
+  { title: '卡券', icon: 'ticket-percent-outline', family: 'material' },
+  { title: '心愿单', icon: 'calendar-heart', family: 'material' },
+  { title: '账号会员', icon: 'shield-check-outline', family: 'material' },
+];
+
+const SIDE_MENU_FOOTER_ITEMS: SideMenuItem[] = [
+  { title: '设置', icon: 'settings', route: '/settings' },
+  { title: '客服', icon: 'headphones' },
+  { title: '扫一扫', icon: 'scan' },
+];
 
 type ProfileTab = 'notes' | 'collections';
 
@@ -294,7 +320,9 @@ export default function ProfileScreen() {
   const [regionPickerVisible, setRegionPickerVisible] = useState(false);
   const [regionDraft, setRegionDraft] = useState<RegionDraft>(() => parseRegion('北京 北京 东城区'));
   const [videoThumbs, setVideoThumbs] = useState<Record<string, string>>({});
+  const [sideMenuVisible, setSideMenuVisible] = useState(false);
   const slideX = useRef(new Animated.Value(0)).current;
+  const sideMenuX = useRef(new Animated.Value(-width)).current;
   const thumbPendingRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -410,6 +438,34 @@ export default function ProfileScreen() {
     } finally {
       setPendingIds((prev) => prev.filter((id) => id !== itemId));
     }
+  }
+
+  function openSideMenu() {
+    setSideMenuVisible(true);
+    sideMenuX.setValue(-width);
+    Animated.timing(sideMenuX, {
+      toValue: 0,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  }
+
+  function closeSideMenu(afterClose?: () => void) {
+    Animated.timing(sideMenuX, {
+      toValue: -width,
+      duration: 190,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (!finished) return;
+      setSideMenuVisible(false);
+      afterClose?.();
+    });
+  }
+
+  function onSideMenuPress(item: SideMenuItem) {
+    closeSideMenu(() => {
+      if (item.route) router.push(item.route);
+    });
   }
 
   function openEditPanel() {
@@ -528,6 +584,7 @@ export default function ProfileScreen() {
   const visibleItems = activeTab === 'notes' ? notes : collections;
   const emptyText = activeTab === 'notes' ? '还没有发布笔记' : '还没有收藏内容';
   const emptyImage = activeTab === 'notes' ? emptyNoteImage : emptyCollectImage;
+  const sideMenuWidth = width * 0.7;
   const panelWidth = Math.min(width, 460);
   const fieldValue = (field: keyof ProfileUserResponse, fallback = '') => String(currentUser?.[field] || fallback);
   const birthdayDays = Array.from({ length: daysInMonth(birthdayDraft.year, birthdayDraft.month) }, (_, index) => index + 1);
@@ -562,10 +619,10 @@ export default function ProfileScreen() {
                 {bgUri ? <Image source={{ uri: bgUri }} style={styles.heroBg} contentFit="cover" /> : null}
                 <View style={styles.heroMask} />
                 <View style={styles.heroTopRow}>
-                  <Pressable style={styles.heroIconBtn} onPress={() => router.push('/find')}>
+                  <Pressable style={styles.heroIconBtn} onPress={openSideMenu}>
                     <MenuIcon width={25} height={25} color="#FFF" />
                   </Pressable>
-                  <Pressable style={styles.heroIconBtn} onPress={() => router.push('/find')}>
+                  <Pressable style={styles.heroIconBtn} onPress={() => router.push('/search')}>
                     <ShareIcon width={24} height={24} color="#FFF" />
                   </Pressable>
                 </View>
@@ -717,6 +774,29 @@ export default function ProfileScreen() {
             );
           }}
         />
+        <Modal visible={sideMenuVisible} transparent animationType="none" presentationStyle="overFullScreen" statusBarTranslucent onRequestClose={() => closeSideMenu()}>
+          <View style={styles.sideMenuRoot}>
+            <Pressable style={styles.sideMenuBackdrop} onPress={() => closeSideMenu()} />
+            <Animated.View style={[styles.sideMenuPanel, { width: sideMenuWidth, transform: [{ translateX: sideMenuX }] }]}>
+              <SafeAreaView style={styles.sideMenuSafe} edges={['top', 'bottom']}>
+                <View style={styles.sideMenuList}>
+                  {SIDE_MENU_ITEMS.map((item) => (
+                    <SideMenuRow key={item.title} item={item} onPress={() => onSideMenuPress(item)} />
+                  ))}
+                </View>
+
+                <View style={styles.sideMenuFooter}>
+                  {SIDE_MENU_FOOTER_ITEMS.map((item) => (
+                    <Pressable key={item.title} style={styles.sideMenuFooterItem} onPress={() => onSideMenuPress(item)}>
+                      <SideMenuIcon item={item} size={20} />
+                      <ThemedText numberOfLines={1} style={styles.sideMenuFooterText}>{item.title}</ThemedText>
+                    </Pressable>
+                  ))}
+                </View>
+              </SafeAreaView>
+            </Animated.View>
+          </View>
+        </Modal>
         <Modal visible={editVisible} transparent animationType="none" presentationStyle="overFullScreen" statusBarTranslucent onRequestClose={closeEditPanel}>
           <View style={styles.drawerRoot}>
             <Pressable style={styles.drawerBackdrop} onPress={closeEditPanel} />
@@ -914,6 +994,27 @@ export default function ProfileScreen() {
   );
 }
 
+function SideMenuIcon({ item, size = 22 }: { item: SideMenuItem; size?: number }) {
+  const color = '#343941';
+
+  if (item.family === 'material') {
+    return <MaterialCommunityIcons name={item.icon as never} size={size} color={color} />;
+  }
+
+  return <Feather name={item.icon as never} size={size} color={color} />;
+}
+
+function SideMenuRow({ item, onPress }: { item: SideMenuItem; onPress: () => void }) {
+  return (
+    <Pressable style={styles.sideMenuRow} onPress={onPress}>
+      <View style={styles.sideMenuIconBox}>
+        <SideMenuIcon item={item} />
+      </View>
+      <ThemedText numberOfLines={1} style={styles.sideMenuText}>{item.title}</ThemedText>
+    </Pressable>
+  );
+}
+
 function PickerColumn<T extends string | number>({
   items,
   selected,
@@ -1052,6 +1153,45 @@ const styles = StyleSheet.create({
   emptyBlock: { alignItems: 'center', justifyContent: 'center', paddingVertical: 32, gap: 10 },
   emptyImage: { width: 210, height: 168, opacity: 0.9 },
   emptyText: { fontSize: 14, color: '#8E8E93' },
+  sideMenuRoot: { ...StyleSheet.absoluteFillObject },
+  sideMenuPanel: {
+    height: '100%',
+    alignSelf: 'stretch',
+    backgroundColor: '#FFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.14,
+    shadowRadius: 14,
+    shadowOffset: { width: 4, height: 0 },
+    elevation: 8,
+  },
+  sideMenuSafe: { flex: 1, backgroundColor: '#FFF', justifyContent: 'space-between' },
+  sideMenuBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.38)' },
+  sideMenuList: { paddingTop: 44 },
+  sideMenuRow: {
+    height: 56,
+    paddingLeft: 20,
+    paddingRight: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  sideMenuIconBox: {
+    width: 30,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  sideMenuText: { flex: 1, fontSize: 15, color: '#343941', fontWeight: '600' },
+  sideMenuFooter: {
+    height: 58,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#F0F0F0',
+    backgroundColor: '#FBFBFB',
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  sideMenuFooterItem: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2, minWidth: 0 },
+  sideMenuFooterText: { fontSize: 11, color: '#565C66', fontWeight: '500' },
   drawerRoot: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', justifyContent: 'flex-end' },
   drawerBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.28)' },
   drawerPanel: { alignSelf: 'stretch', backgroundColor: '#FFF' },

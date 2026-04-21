@@ -1,8 +1,6 @@
 import { apiUrl } from '@/constants/api';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { emitAuthSessionExpired } from '@/lib/auth-session-events';
-
-const TOKEN_KEY = '@auth_token';
+import { AUTH_TOKEN_KEY, getString } from '@/lib/storage';
 
 export class ApiError extends Error {
   constructor(
@@ -28,7 +26,7 @@ function isOtherDeviceLogin(message?: string) {
 }
 
 export async function getAuthHeaders(withJson = true) {
-  const token = await AsyncStorage.getItem(TOKEN_KEY);
+  const token = getString(AUTH_TOKEN_KEY);
   const headers: Record<string, string> = withJson
     ? { 'Content-Type': 'application/json' }
     : {};

@@ -32,13 +32,18 @@ import UnlikedIcon from '@/public/icon/xihuan_1.svg';
 
 type NoteCommentDto = {
   id?: number | string;
+  parentId?: number | string;
   account?: string;
   name?: string;
   text?: string;
   avatar?: string;
   likeCount?: number | string;
+  liked?: boolean;
   location?: string;
   date?: string;
+  replyToName?: string;
+  replyToAccount?: string;
+  replies?: NoteCommentDto[];
 };
 
 type NoteDetailDto = {
@@ -60,14 +65,61 @@ type UserInfoDto = {
   collects?: string;
 };
 
+type CommentLikeResult = {
+  commentId: number | string;
+  commentIndex?: number;
+  replyIndex?: number;
+  parentId?: number | string;
+  liked: boolean;
+  likeCount: number;
+};
+
+type ReplyResult = {
+  parentId: number | string;
+  parentIndex?: number;
+  reply: NoteCommentDto;
+};
+
 type NoteComment = {
   id: string;
+  localKey: string;
+  index: number;
+  account: string;
   name: string;
   text: string;
   avatarUri?: string;
   likeCount: number;
+  liked: boolean;
   date: string;
   location: string;
+  replies: NoteReply[];
+};
+
+type NoteReply = {
+  id: string;
+  parentId: string;
+  parentIndex: number;
+  parentLocalKey: string;
+  localKey: string;
+  index: number;
+  account: string;
+  name: string;
+  text: string;
+  avatarUri?: string;
+  likeCount: number;
+  liked: boolean;
+  date: string;
+  location: string;
+  replyToName: string;
+  replyToAccount: string;
+};
+
+type ReplyTarget = {
+  parentId: string;
+  parentIndex: number;
+  parentLocalKey: string;
+  replyToName: string;
+  replyToAccount: string;
 };
 
 type NoteDetail = {
@@ -94,17 +146,48 @@ function parseIdList(value: unknown): string[] {
     .filter(Boolean);
 }
 
-function mapComments(items: NoteCommentDto[] | undefined): NoteComment[] {
+function mapReplies(items: NoteCommentDto[] | undefined, parent: { id: string; index: number; localKey: string }): NoteReply[] {
   if (!Array.isArray(items)) return [];
   return items.map((item, index) => ({
     id: String(item.id ?? index),
+    parentId: String(item.parentId ?? parent.id),
+    parentIndex: parent.index,
+    parentLocalKey: parent.localKey,
+    localKey: `${parent.localKey}-reply-${String(item.id ?? 'reply')}-${index}`,
+    index,
+    account: String(item.account || ''),
     name: String(item.name || item.account || '用户'),
     text: String(item.text || ''),
     avatarUri: resolveMediaUrl(typeof item.avatar === 'string' ? item.avatar : undefined),
     likeCount: Number(item.likeCount || 0),
+    liked: Boolean(item.liked),
     date: String(item.date || ''),
     location: String(item.location || ''),
+    replyToName: String(item.replyToName || ''),
+    replyToAccount: String(item.replyToAccount || ''),
   }));
+}
+
+function mapComments(items: NoteCommentDto[] | undefined): NoteComment[] {
+  if (!Array.isArray(items)) return [];
+  return items.map((item, index) => {
+    const id = String(item.id ?? index);
+    const localKey = `${id}-${index}`;
+    return {
+      id,
+      localKey,
+      index,
+      account: String(item.account || ''),
+      name: String(item.name || item.account || '用户'),
+      text: String(item.text || ''),
+      avatarUri: resolveMediaUrl(typeof item.avatar === 'string' ? item.avatar : undefined),
+      likeCount: Number(item.likeCount || 0),
+      liked: Boolean(item.liked),
+      date: String(item.date || ''),
+      location: String(item.location || ''),
+      replies: mapReplies(item.replies, { id, index, localKey }),
+    };
+  });
 }
 
 function toNoteDetail(note: NoteDetailDto, userInfo?: UserInfoDto): NoteDetail {
@@ -153,8 +236,10 @@ export default function NoteDetailScreen() {
   const [commentVisible, setCommentVisible] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [commentText, setCommentText] = useState('');
+  const [replyingTo, setReplyingTo] = useState<ReplyTarget | null>(null);
   const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
   const [collectedIds, setCollectedIds] = useState<Set<string>>(new Set());
+  const [commentLikingIds, setCommentLikingIds] = useState<Set<string>>(new Set());
   const [currentPage, setCurrentPage] = useState(0);
   const [imageSizes, setImageSizes] = useState<ImageSizeMap>({});
 
@@ -166,7 +251,7 @@ export default function NoteDetailScreen() {
 
     try {
       const [detailRes, userInfoRes] = await Promise.all([
-        postPublicJson<NoteDetailDto>('/noteDetail', { id }),
+        postPublicJson<NoteDetailDto>('/noteDetail', { id, account: user?.account || '' }),
         user?.account
           ? postJson<UserInfoDto>('/user/getUserInfo', { account: user.account })
           : Promise.resolve({ result: { likes: '', collects: '' } as UserInfoDto }),
@@ -183,6 +268,7 @@ export default function NoteDetailScreen() {
 
       setLikedIds(nextLikedIds);
       setCollectedIds(nextCollectedIds);
+      setCommentLikingIds(new Set());
       setCurrentPage(0);
       setNote(nextNote);
       setError(null);
@@ -200,22 +286,59 @@ export default function NoteDetailScreen() {
 
     setSubmitting(true);
     try {
-      const { result } = await postJson<NoteCommentDto>('/upload/addComment', {
-        id: note.id,
-        account: user.account,
-        name: user.name || user.account,
-        text,
-        avatar: user.url || '',
-        likeCount: 0,
-        location: '',
-        date: new Date().toISOString().slice(0, 10),
-      });
+      const body = replyingTo
+        ? {
+            id: note.id,
+            action: 'reply',
+            parentId: replyingTo.parentId,
+            parentIndex: replyingTo.parentIndex,
+            account: user.account,
+            name: user.name || user.account,
+            text,
+            avatar: user.url || '',
+            likeCount: 0,
+            location: '',
+            date: new Date().toISOString().slice(0, 10),
+            replyToName: replyingTo.replyToName,
+            replyToAccount: replyingTo.replyToAccount,
+          }
+        : {
+            id: note.id,
+            account: user.account,
+            name: user.name || user.account,
+            text,
+            avatar: user.url || '',
+            likeCount: 0,
+            location: '',
+            date: new Date().toISOString().slice(0, 10),
+          };
+
+      const { result } = await postJson<NoteCommentDto | ReplyResult>('/upload/addComment', body);
 
       setCommentText('');
+      setReplyingTo(null);
       setCommentVisible(false);
       setError(null);
 
-      if (result) {
+      if (result && replyingTo && 'reply' in result) {
+        const nextReply = mapReplies([result.reply], {
+          id: replyingTo.parentId,
+          index: replyingTo.parentIndex,
+          localKey: replyingTo.parentLocalKey,
+        })[0];
+        setNote((prev) =>
+          prev
+            ? {
+                ...prev,
+                comments: prev.comments.map((comment) =>
+                  comment.localKey === replyingTo.parentLocalKey
+                    ? { ...comment, replies: [...comment.replies, nextReply] }
+                    : comment
+                ),
+              }
+            : prev
+        );
+      } else if (result) {
         const nextComment = mapComments([result])[0];
         setNote((prev) =>
           prev
@@ -232,6 +355,122 @@ export default function NoteDetailScreen() {
       setError(err instanceof Error ? err.message : '发表评论失败');
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function toggleCommentLike(targetComment: NoteComment | NoteReply) {
+    if (!user?.account) {
+      router.push('/login');
+      return;
+    }
+    const { id: commentId, localKey, index: commentIndex } = targetComment;
+    if (!note || commentLikingIds.has(localKey)) return;
+
+    const isReply = 'parentId' in targetComment;
+    const currentComment = isReply
+      ? note.comments
+          .find((comment) => comment.localKey === targetComment.parentLocalKey)
+          ?.replies.find((reply) => reply.localKey === localKey)
+      : note.comments.find((comment) => comment.localKey === localKey);
+    if (!currentComment) return;
+
+    const previousLiked = currentComment.liked;
+    const nextLiked = !previousLiked;
+    const nextLikeCount = Math.max(0, currentComment.likeCount + (nextLiked ? 1 : -1));
+
+    setCommentLikingIds((prev) => new Set(prev).add(localKey));
+    setNote((prev) =>
+      prev
+        ? {
+            ...prev,
+            comments: prev.comments.map((comment) =>
+              isReply
+                ? comment.localKey === targetComment.parentLocalKey
+                  ? {
+                      ...comment,
+                      replies: comment.replies.map((reply) =>
+                        reply.localKey === localKey ? { ...reply, liked: nextLiked, likeCount: nextLikeCount } : reply
+                      ),
+                    }
+                  : comment
+                : comment.localKey === localKey
+                  ? { ...comment, liked: nextLiked, likeCount: nextLikeCount }
+                  : comment
+            ),
+          }
+        : prev
+    );
+
+    try {
+      const { result } = await postJson<CommentLikeResult>('/upload/addComment', {
+        id: note.id,
+        action: 'like',
+        commentId,
+        commentIndex: isReply ? undefined : commentIndex,
+        parentId: isReply ? targetComment.parentId : 0,
+        parentIndex: isReply ? targetComment.parentIndex : undefined,
+        replyIndex: isReply ? targetComment.index : undefined,
+        account: user.account,
+        name: user.name || user.account,
+        avatar: user.url || '',
+      });
+      if (result) {
+        setNote((prev) =>
+          prev
+            ? {
+                ...prev,
+                comments: prev.comments.map((comment) =>
+                  isReply
+                    ? comment.localKey === targetComment.parentLocalKey
+                      ? {
+                          ...comment,
+                          replies: comment.replies.map((reply) =>
+                            reply.localKey === localKey
+                              ? { ...reply, liked: Boolean(result.liked), likeCount: Number(result.likeCount || 0) }
+                              : reply
+                          ),
+                        }
+                      : comment
+                    : comment.localKey === localKey
+                      ? { ...comment, liked: Boolean(result.liked), likeCount: Number(result.likeCount || 0) }
+                      : comment
+                ),
+              }
+            : prev
+        );
+      }
+      setError(null);
+    } catch (err) {
+      setNote((prev) =>
+        prev
+          ? {
+              ...prev,
+              comments: prev.comments.map((comment) =>
+                isReply
+                  ? comment.localKey === targetComment.parentLocalKey
+                    ? {
+                        ...comment,
+                        replies: comment.replies.map((reply) =>
+                          reply.localKey === localKey
+                            ? { ...reply, liked: previousLiked, likeCount: currentComment.likeCount }
+                            : reply
+                        ),
+                      }
+                    : comment
+                  : comment.localKey === localKey
+                    ? { ...comment, liked: previousLiked, likeCount: currentComment.likeCount }
+                    : comment
+              ),
+            }
+          : prev
+      );
+      setError(err instanceof Error ? err.message : '评论点赞失败');
+    } finally {
+      setCommentLikingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(localKey);
+        return next;
+      });
     }
   }
 
@@ -312,6 +551,7 @@ export default function NoteDetailScreen() {
   useEffect(() => {
     if (!commentVisible) return;
     const keyboardSub = Keyboard.addListener('keyboardDidHide', () => {
+      setReplyingTo(null);
       setCommentVisible(false);
     });
 
@@ -374,6 +614,10 @@ export default function NoteDetailScreen() {
   const carouselHeight = activeImageSize
     ? Math.min(Math.max((width * activeImageSize.height) / Math.max(activeImageSize.width, 1), 240), 680)
     : Math.min(Math.max(width * 1.18, 240), 680);
+  const totalCommentCount = useMemo(
+    () => (note?.comments ?? []).reduce((total, comment) => total + 1 + comment.replies.length, 0),
+    [note?.comments]
+  );
 
   function handleCarouselMomentumEnd(event: NativeSyntheticEvent<NativeScrollEvent>) {
     if (!loopImages.length) return;
@@ -402,6 +646,77 @@ export default function NoteDetailScreen() {
     }
 
     setCurrentPage(rawPage - 1);
+  }
+
+  function openReply(target: NoteComment | NoteReply) {
+    if (!user?.account) {
+      router.push('/login');
+      return;
+    }
+
+    const replyTarget: ReplyTarget =
+      'parentId' in target
+        ? {
+            parentId: target.parentId,
+            parentIndex: target.parentIndex,
+            parentLocalKey: target.parentLocalKey,
+            replyToName: target.name,
+            replyToAccount: target.account,
+          }
+        : {
+            parentId: target.id,
+            parentIndex: target.index,
+            parentLocalKey: target.localKey,
+            replyToName: target.name,
+            replyToAccount: target.account,
+          };
+
+    setReplyingTo(replyTarget);
+    setCommentVisible(true);
+    setTimeout(() => commentInputRef.current?.focus(), 80);
+  }
+
+  function renderCommentLike(comment: NoteComment | NoteReply) {
+    const liked = comment.liked;
+    const pending = commentLikingIds.has(comment.localKey);
+    const LikeIcon = liked ? LikedIcon : UnlikedIcon;
+
+    return (
+      <Pressable
+        style={[styles.commentLikeBtn, pending ? styles.commentLikePending : null]}
+        disabled={pending}
+        accessibilityRole="button"
+        accessibilityLabel={liked ? '取消评论点赞' : '点赞评论'}
+        onPress={() => void toggleCommentLike(comment)}>
+        <LikeIcon width={18} height={18} color={liked ? '#FF2442' : muted} />
+        {comment.likeCount > 0 ? (
+          <ThemedText style={[styles.commentLikeText, { color: liked ? '#FF2442' : muted }]}>
+            {comment.likeCount}
+          </ThemedText>
+        ) : null}
+      </Pressable>
+    );
+  }
+
+  function renderReply(reply: NoteReply) {
+    return (
+      <View key={reply.localKey} style={styles.replyItem}>
+        <View style={styles.replyTop}>
+          <ThemedText style={styles.replyName}>
+            {reply.name}
+            {reply.replyToName ? <ThemedText style={styles.replyTo}> 回复 {reply.replyToName}</ThemedText> : null}
+          </ThemedText>
+          {renderCommentLike(reply)}
+        </View>
+        <ThemedText style={styles.replyText}>{reply.text}</ThemedText>
+        <View style={styles.commentMetaRow}>
+          <ThemedText style={[styles.metaText, { color: muted }]}>{[reply.date, reply.location].filter(Boolean).join(' · ')}</ThemedText>
+          <Pressable onPress={() => openReply(reply)}>
+            <ThemedText style={[styles.replyActionText, { color: muted }]}>回复</ThemedText>
+          </Pressable>
+        </View>
+      </View>
+    );
   }
 
   return (
@@ -483,7 +798,7 @@ export default function NoteDetailScreen() {
                 <View style={styles.summaryRow}>
                   <ThemedText style={[styles.metaText, { color: muted }]}>获赞 {note.likes}</ThemedText>
                   <ThemedText style={[styles.metaText, { color: muted }]}>收藏 {note.collects}</ThemedText>
-                  <ThemedText style={[styles.metaText, { color: muted }]}>评论 {note.comments.length}</ThemedText>
+                  <ThemedText style={[styles.metaText, { color: muted }]}>评论 {totalCommentCount}</ThemedText>
                 </View>
               </View>
 
@@ -497,7 +812,7 @@ export default function NoteDetailScreen() {
 
               {note.comments.length ? (
                 note.comments.map((item, index) => (
-                  <View key={`${item.id}-${index}`} style={[styles.commentCard, { borderBottomColor: border }]}>
+                  <View key={item.localKey} style={[styles.commentCard, { borderBottomColor: border }]}>
                     {item.avatarUri ? (
                       <ExpoImage source={{ uri: item.avatarUri }} style={styles.commentAvatar} contentFit="cover" />
                     ) : (
@@ -506,10 +821,16 @@ export default function NoteDetailScreen() {
                     <View style={styles.commentBody}>
                       <View style={styles.commentTop}>
                         <ThemedText style={styles.commentName}>{item.name}</ThemedText>
-                        <ThemedText style={[styles.metaText, { color: muted }]}>赞 {item.likeCount}</ThemedText>
+                        {renderCommentLike(item)}
                       </View>
                       <ThemedText style={styles.commentText}>{item.text}</ThemedText>
-                      <ThemedText style={[styles.metaText, { color: muted }]}>{[item.date, item.location].filter(Boolean).join(' · ')}</ThemedText>
+                      <View style={styles.commentMetaRow}>
+                        <ThemedText style={[styles.metaText, { color: muted }]}>{[item.date, item.location].filter(Boolean).join(' · ')}</ThemedText>
+                        <Pressable onPress={() => openReply(item)}>
+                          <ThemedText style={[styles.replyActionText, { color: muted }]}>回复</ThemedText>
+                        </Pressable>
+                      </View>
+                      {item.replies.length ? <View style={styles.replyList}>{item.replies.map(renderReply)}</View> : null}
                     </View>
                   </View>
                 ))
@@ -529,7 +850,12 @@ export default function NoteDetailScreen() {
         ) : null}
 
         <View style={[styles.inputBar, { borderTopColor: border, backgroundColor: '#FFFFFF' }]}>
-          <Pressable style={[styles.inputGhost, { borderColor: border }]} onPress={() => setCommentVisible(true)}>
+          <Pressable
+            style={[styles.inputGhost, { borderColor: border }]}
+            onPress={() => {
+              setReplyingTo(null);
+              setCommentVisible(true);
+            }}>
             <ThemedText style={[styles.inputGhostText, { color: muted }]}>{user ? '说点什么...' : '登录后可评论'}</ThemedText>
           </Pressable>
           <Pressable style={[styles.actionBtn, { opacity: liking ? 0.6 : 1 }]} disabled={liking} onPress={() => void toggleLike()}>
@@ -544,10 +870,11 @@ export default function NoteDetailScreen() {
             style={[styles.actionBtn, { opacity: submitting ? 0.6 : 1 }]}
             disabled={submitting}
             onPress={() => {
+              setReplyingTo(null);
               setCommentVisible(true);
             }}>
             <CommentIcon width={22} height={22} color={muted} />
-            <ThemedText style={[styles.actionText, { color: muted }]}>{note?.comments.length ? note.comments.length : '评论'}</ThemedText>
+            <ThemedText style={[styles.actionText, { color: muted }]}>{totalCommentCount ? totalCommentCount : '评论'}</ThemedText>
           </Pressable>
         </View>
 
@@ -555,23 +882,36 @@ export default function NoteDetailScreen() {
           visible={commentVisible}
           transparent
           animationType="slide"
-          onRequestClose={() => setCommentVisible(false)}
+          onRequestClose={() => {
+            setReplyingTo(null);
+            setCommentVisible(false);
+          }}
           onShow={() => {
             if (!user?.account) return;
             setTimeout(() => commentInputRef.current?.focus(), 80);
           }}>
-          <Pressable style={styles.mask} onPress={() => setCommentVisible(false)} />
+          <Pressable
+            style={styles.mask}
+            onPress={() => {
+              setReplyingTo(null);
+              setCommentVisible(false);
+            }}
+          />
           <View style={styles.commentPanel}>
             <View style={styles.panelHeader}>
-              <ThemedText style={styles.panelTitle}>共 {note?.comments.length ?? 0} 条评论</ThemedText>
-              <Pressable onPress={() => setCommentVisible(false)}>
+              <ThemedText style={styles.panelTitle}>共 {totalCommentCount} 条评论</ThemedText>
+              <Pressable
+                onPress={() => {
+                  setReplyingTo(null);
+                  setCommentVisible(false);
+                }}>
                 <ThemedText style={[styles.metaText, { color: muted }]}>关闭</ThemedText>
               </Pressable>
             </View>
 
             <FlatList
               data={note?.comments ?? []}
-              keyExtractor={(item, index) => `${item.id}-${index}`}
+              keyExtractor={(item) => item.localKey}
               contentContainerStyle={styles.panelList}
               ListEmptyComponent={<ThemedText style={[styles.stateText, { color: muted }]}>还没有评论，快来抢沙发</ThemedText>}
               renderItem={({ item }) => (
@@ -584,8 +924,15 @@ export default function NoteDetailScreen() {
                   <View style={styles.panelCommentMain}>
                     <ThemedText style={styles.panelCommentName}>{item.name}</ThemedText>
                     <ThemedText style={styles.panelCommentText}>{item.text}</ThemedText>
-                    <ThemedText style={[styles.metaText, { color: muted }]}>{[item.date, item.location].filter(Boolean).join(' · ')}</ThemedText>
+                    <View style={styles.commentMetaRow}>
+                      <ThemedText style={[styles.metaText, { color: muted }]}>{[item.date, item.location].filter(Boolean).join(' · ')}</ThemedText>
+                      <Pressable onPress={() => openReply(item)}>
+                        <ThemedText style={[styles.replyActionText, { color: muted }]}>回复</ThemedText>
+                      </Pressable>
+                    </View>
+                    {item.replies.length ? <View style={styles.panelReplyList}>{item.replies.map(renderReply)}</View> : null}
                   </View>
+                  {renderCommentLike(item)}
                 </View>
               )}
             />
@@ -595,7 +942,7 @@ export default function NoteDetailScreen() {
                 ref={commentInputRef}
                 style={styles.panelInput}
                 editable={Boolean(user) && !submitting}
-                placeholder={user ? '写下你的评论...' : '登录后可评论'}
+                placeholder={user ? (replyingTo ? `回复 ${replyingTo.replyToName}` : '写下你的评论...') : '登录后可评论'}
                 placeholderTextColor={muted}
                 value={commentText}
                 onChangeText={(text) => {
@@ -660,6 +1007,17 @@ const styles = StyleSheet.create({
   commentTop: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
   commentName: { fontSize: 14, fontWeight: '600' },
   commentText: { fontSize: 14, lineHeight: 22, color: '#1F2329' },
+  commentMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  replyActionText: { fontSize: 12, fontWeight: '600' },
+  replyList: { marginTop: 4, gap: 8, borderRadius: 8, backgroundColor: '#F7F8FA', padding: 10 },
+  replyItem: { gap: 4 },
+  replyTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  replyName: { flex: 1, color: '#5A6270', fontSize: 13, fontWeight: '600' },
+  replyTo: { color: '#8E8E93', fontSize: 13, fontWeight: '500' },
+  replyText: { color: '#1F2329', fontSize: 13, lineHeight: 19 },
+  commentLikeBtn: { minWidth: 34, minHeight: 28, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 3, paddingLeft: 8 },
+  commentLikeText: { fontSize: 12, fontWeight: '600' },
+  commentLikePending: { opacity: 0.6 },
   inlineError: { paddingHorizontal: 16, paddingBottom: 8 },
   inputBar: {
     position: 'absolute',
@@ -688,6 +1046,7 @@ const styles = StyleSheet.create({
   panelCommentMain: { flex: 1, gap: 4 },
   panelCommentName: { color: '#5A6270', fontSize: 13 },
   panelCommentText: { color: '#1F2329', fontSize: 14, lineHeight: 20 },
+  panelReplyList: { marginTop: 4, gap: 8, borderRadius: 8, backgroundColor: '#F7F8FA', padding: 10 },
   panelInputRow: { flexDirection: 'row', alignItems: 'center', gap: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#ECECEC', paddingTop: 10 },
   panelInput: { flex: 1, height: 40, borderRadius: 20, backgroundColor: '#F5F6F8', paddingHorizontal: 12, fontSize: 14, color: '#1F2329' },
   sendBtn: { width: 64, height: 36, borderRadius: 18, backgroundColor: '#FF4F72', alignItems: 'center', justifyContent: 'center' },

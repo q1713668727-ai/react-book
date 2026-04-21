@@ -98,10 +98,11 @@ function normalizeEmojiKey(value: unknown): keyof typeof emojiAssets | undefined
 function toChatMessages(history: ConversationItem['historyMessage']) {
   return (Array.isArray(history) ? history : []).map((item, index) => {
     const textType = item?.text?.type === 'emoji' ? 'emoji' : 'text';
+    const date = historyMessageDate(item);
     return {
-      id: `${item?.date || 'd'}-${index}`,
+      id: `${date || 'd'}-${index}`,
       mine: Boolean(item?.mine),
-      date: String(item?.date || ''),
+      date: String(date || ''),
       type: textType,
       text: textType === 'text' ? String(item?.text?.message || '') : undefined,
       emoji: textType === 'emoji' ? normalizeEmojiKey(item?.text?.url) : undefined,
@@ -147,6 +148,21 @@ function startOfDay(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
+function historyMessageDate(message: HistoryMessage | undefined) {
+  if (!message) return '';
+  const record = message as HistoryMessage & Record<string, unknown>;
+  const value =
+    record.date ??
+    record.time ??
+    record.lastTime ??
+    record.updateTime ??
+    record.updatedAt ??
+    record.createTime ??
+    record.createdAt ??
+    '';
+  return String(value || '');
+}
+
 function formatDetailTime(date: Date) {
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
@@ -155,7 +171,7 @@ function formatDetailTime(date: Date) {
   const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
   const diffDays = Math.floor((startOfDay(now).getTime() - startOfDay(date).getTime()) / 86400000);
 
-  if (diffDays === 0) return time;
+  if (diffDays === 0) return `今天 ${time}`;
   if (diffDays > 0 && diffDays < 7) return `${weekdayLabels[date.getDay()]} ${time}`;
   if (date.getFullYear() === now.getFullYear()) return `${date.getMonth() + 1}月${date.getDate()}日 ${time}`;
   return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${time}`;
@@ -209,6 +225,7 @@ export default function ChatDetailScreen() {
   const [composerHeight, setComposerHeight] = useState(80);
   const [followed, setFollowed] = useState(false);
   const [followPending, setFollowPending] = useState(false);
+  const [timeTick, setTimeTick] = useState(0);
 
   const targetName = String(params.title || chatId || '聊天');
   const targetAvatar = avatarUri(String(params.url || ''));
@@ -278,7 +295,7 @@ export default function ChatDetailScreen() {
           if (incomingAccount === user.account) return;
 
           const data = packet.data.message;
-          const receivedAt = String(data.date || new Date().toISOString());
+          const receivedAt = historyMessageDate(data) || new Date().toISOString();
           readCountRef.current += 1;
           void writeChatReadMarker(user.account, chatId, messageReadKey(data), readCountRef.current);
           const next: ChatMessage = {
@@ -342,7 +359,7 @@ export default function ChatDetailScreen() {
   const displayMessages = useMemo(() => {
     const next = toDisplayMessages(messages);
     return shouldInvertMessages ? next.reverse() : next;
-  }, [messages, shouldInvertMessages]);
+  }, [messages, shouldInvertMessages, timeTick]);
   const messagesComposerPadding = useMemo(
     () =>
       shouldInvertMessages
@@ -376,16 +393,23 @@ export default function ChatDetailScreen() {
     };
   }, [composerHeight, keyboardHeight, messages.length, shouldInvertMessages]);
 
+  useEffect(() => {
+    if (!messages.length) return;
+    const timer = setInterval(() => setTimeTick((tick) => tick + 1), 60000);
+    return () => clearInterval(timer);
+  }, [messages.length]);
+
   async function sendMessage(type: 'text' | 'emoji', value: string) {
     if (!user?.account || !chatId || !ready || sending) return;
     setSending(true);
     try {
+      const sentAt = new Date().toISOString();
       const payload = {
         UserToUser: `${user.account}-${chatId}`,
         account: user.account,
         target: chatId,
         message: {
-          date: null,
+          date: sentAt,
           mine: true,
           text:
             type === 'text'
@@ -396,7 +420,6 @@ export default function ChatDetailScreen() {
 
       socketRef.current?.send(JSON.stringify(payload));
       const emoji = type === 'emoji' ? normalizeEmojiKey(value) : undefined;
-      const sentAt = new Date().toISOString();
       setMessages((prev) => [
         ...prev,
         {
