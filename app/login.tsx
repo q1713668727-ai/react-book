@@ -1,7 +1,6 @@
 import { Stack, useRouter } from 'expo-router';
 import { useState } from 'react';
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -10,14 +9,30 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AppActivityIndicator } from '@/components/app-loading';
+import { useFeedback } from '@/components/app-feedback';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/auth-context';
 import { ApiError } from '@/lib/post-json';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
+function toChineseAuthError(error: unknown, fallback: string) {
+  const text = String(error instanceof ApiError ? error.message : error instanceof Error ? error.message : '').trim();
+  if (!text) return fallback;
+  const lower = text.toLowerCase();
+  if (lower.includes('account is required')) return '请输入账号';
+  if (lower.includes('password is required')) return '请输入密码';
+  if (lower.includes('user not found') || lower.includes('account not found')) return '账号不存在';
+  if (lower.includes('password') && (lower.includes('invalid') || lower.includes('wrong') || lower.includes('incorrect'))) return '密码错误';
+  if (lower.includes('token') && (lower.includes('expired') || lower.includes('invalid'))) return '登录已过期，请重新登录';
+  if (lower.includes('network request failed') || lower.includes('failed to fetch')) return '网络异常，请检查网络后重试';
+  return text;
+}
+
 export default function LoginScreen() {
   const router = useRouter();
+  const feedback = useFeedback();
   const { signIn, signOut } = useAuth();
   const [account, setAccount] = useState('');
   const [password, setPassword] = useState('');
@@ -38,9 +53,10 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       await signIn(account, password);
+      feedback.toast('登录成功');
       router.replace('/profile');
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : '登录失败');
+      setError(toChineseAuthError(e, '登录失败'));
     } finally {
       setLoading(false);
     }
@@ -101,7 +117,7 @@ export default function LoginScreen() {
             onPress={onSubmit}
             disabled={loading}>
             {loading ? (
-              <ActivityIndicator color="#fff" />
+              <AppActivityIndicator compact color="#FFFFFF" />
             ) : (
               <ThemedText style={styles.primaryBtnText} lightColor="#fff" darkColor="#fff">
                 登录

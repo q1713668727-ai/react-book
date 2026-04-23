@@ -3,9 +3,11 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useRouter } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AppActivityIndicator } from '@/components/app-loading';
+import { useFeedback } from '@/components/app-feedback';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { apiUrl } from '@/constants/api';
@@ -37,6 +39,7 @@ function assertUploadOk(result: FileSystem.FileSystemUploadResult) {
 
 export default function AddVideoScreen() {
   const router = useRouter();
+  const feedback = useFeedback();
   const { user } = useAuth();
   const [title, setTitle] = useState('');
   const [brief, setBrief] = useState('');
@@ -102,7 +105,8 @@ export default function AddVideoScreen() {
       setTitle('');
       setBrief('');
       setVideo(null);
-      setMessage('发布成功');
+      setMessage(null);
+      feedback.toast('视频发布成功');
     } catch (err) {
       setMessage(err instanceof Error ? err.message : '发布失败');
     } finally {
@@ -147,7 +151,7 @@ export default function AddVideoScreen() {
           {message ? <ThemedText style={styles.message}>{message}</ThemedText> : null}
 
           <Pressable style={[styles.submitBtn, loading && styles.submitBtnDisabled]} disabled={loading} onPress={() => void onSubmit()}>
-            {loading ? <ActivityIndicator color="#FFF" /> : <ThemedText style={styles.submitText}>发布视频</ThemedText>}
+            {loading ? <AppActivityIndicator compact color="#FFFFFF" /> : <ThemedText style={styles.submitText}>发布视频</ThemedText>}
           </Pressable>
         </ScrollView>
       </ThemedView>

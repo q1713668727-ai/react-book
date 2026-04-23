@@ -1,7 +1,6 @@
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -11,14 +10,31 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AppActivityIndicator } from '@/components/app-loading';
+import { useFeedback } from '@/components/app-feedback';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/auth-context';
 import { ApiError } from '@/lib/post-json';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
+function toChineseRegisterError(error: unknown, fallback: string) {
+  const text = String(error instanceof ApiError ? error.message : error instanceof Error ? error.message : '').trim();
+  if (!text) return fallback;
+  const lower = text.toLowerCase();
+  if (lower.includes('name') && lower.includes('required')) return '请输入昵称';
+  if (lower.includes('account') && lower.includes('required')) return '请输入账号';
+  if (lower.includes('email') && lower.includes('required')) return '请输入邮箱';
+  if (lower.includes('password') && lower.includes('required')) return '请输入密码';
+  if (lower.includes('already') || lower.includes('exists') || lower.includes('duplicate')) return '账号已存在，请更换账号';
+  if (lower.includes('invalid') && lower.includes('email')) return '邮箱格式不正确';
+  if (lower.includes('network request failed') || lower.includes('failed to fetch')) return '网络异常，请检查网络后重试';
+  return text;
+}
+
 export default function RegisterScreen() {
   const router = useRouter();
+  const feedback = useFeedback();
   const { signUp } = useAuth();
   const [name, setName] = useState('');
   const [account, setAccount] = useState('');
@@ -51,9 +67,10 @@ export default function RegisterScreen() {
         email: email.trim(),
         password,
       });
+      feedback.toast('注册成功');
       router.replace('/profile');
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : '注册失败');
+      setError(toChineseRegisterError(e, '注册失败'));
     } finally {
       setLoading(false);
     }
@@ -138,7 +155,7 @@ export default function RegisterScreen() {
               onPress={onSubmit}
               disabled={loading}>
               {loading ? (
-                <ActivityIndicator color="#fff" />
+                <AppActivityIndicator compact color="#FFFFFF" />
               ) : (
                 <ThemedText style={styles.primaryBtnText} lightColor="#fff" darkColor="#fff">
                   注册

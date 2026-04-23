@@ -2,9 +2,10 @@ import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AppActivityIndicator } from '@/components/app-loading';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
@@ -447,7 +448,7 @@ export default function FindScreen() {
             contentContainerStyle={styles.feedList}
             ListEmptyComponent={
               <View style={styles.emptyState}>
-                {loading ? <ActivityIndicator /> : <ThemedText style={styles.muted}>{error || activeSearchType.empty}</ThemedText>}
+                {loading ? <AppActivityIndicator label="正在搜索" /> : <ThemedText style={styles.muted}>{error || activeSearchType.empty}</ThemedText>}
               </View>
             }
             onEndReachedThreshold={0.3}
@@ -522,7 +523,7 @@ export default function FindScreen() {
             contentContainerStyle={styles.list}
             ListEmptyComponent={
               <View style={styles.emptyState}>
-                {loading ? <ActivityIndicator /> : <ThemedText style={styles.muted}>{error || activeSearchType.empty}</ThemedText>}
+                {loading ? <AppActivityIndicator label="正在搜索" /> : <ThemedText style={styles.muted}>{error || activeSearchType.empty}</ThemedText>}
               </View>
             }
             onEndReachedThreshold={0.3}

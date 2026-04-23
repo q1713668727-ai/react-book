@@ -1,9 +1,13 @@
 import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Animated, FlatList, Pressable, StyleSheet, View } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AppActivityIndicator } from '@/components/app-loading';
+import { useFeedback } from '@/components/app-feedback';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
@@ -11,7 +15,7 @@ import { useAuth } from '@/contexts/auth-context';
 import { ensureChatMessageTimeMarkers, type ChatMessageTimeMarker } from '@/lib/chat-message-times';
 import { latestMessageKey, readChatReadMarkers, writeConversationReadMarker, type ChatReadMarker } from '@/lib/chat-read-markers';
 import { connectChatSocket } from '@/lib/chat-socket';
-import { fetchConversationList, type ConversationItem } from '@/lib/redbook-api';
+import { clearConversationMessages, deleteConversationMessages, fetchConversationList, type ConversationItem } from '@/lib/redbook-api';
 
 const shortcutIcons = {
   likes: require('../../public/image/heart.png'),
@@ -21,10 +25,7 @@ const shortcutIcons = {
 
 const weekdayLabels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const tenMinutes = 10 * 60 * 1000;
-
-function hasMessages(item: ConversationItem) {
-  return Array.isArray(item.historyMessage) && item.historyMessage.length > 0;
-}
+const HIDDEN_CONVERSATIONS_KEY_PREFIX = '@chat_hidden_conversations_v1:';
 
 function latestMessage(item: ConversationItem) {
   const history = Array.isArray(item.historyMessage) ? item.historyMessage : [];
@@ -49,9 +50,9 @@ function itemUnread(account: string, item: ConversationItem, markers: Record<str
 
 function itemPreview(item: ConversationItem) {
   const last = latestMessage(item);
-  if (!last) return '';
+  if (!last) return '[暂无消息]';
   const textType = String(last?.text?.type || '');
-  if (textType === 'emoji') return '[表情]';
+  if (textType === 'emoji') return String(last?.text?.message || '').trim() || '[表情]';
   if (textType === 'file') return '[文件]';
   return String(last?.text?.message || '');
 }
@@ -143,13 +144,45 @@ type ChatSocketPacket = {
 export default function ChatScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const feedback = useFeedback();
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [list, setList] = useState<ConversationItem[]>([]);
+  const [hiddenConversationIds, setHiddenConversationIds] = useState<string[]>([]);
   const [markers, setMarkers] = useState<Record<string, ChatReadMarker>>({});
   const [timeMarkers, setTimeMarkers] = useState<Record<string, ChatMessageTimeMarker>>({});
   const [, setTimeTick] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const hiddenStorageKey = user?.account ? `${HIDDEN_CONVERSATIONS_KEY_PREFIX}${user.account}` : '';
+  const visibleList = list.filter((item) => !hiddenConversationIds.includes(String(item.id)));
+
+  const loadHiddenConversationIds = useCallback(async () => {
+    if (!hiddenStorageKey) {
+      setHiddenConversationIds([]);
+      return;
+    }
+    try {
+      const raw = await AsyncStorage.getItem(hiddenStorageKey);
+      if (!raw) {
+        setHiddenConversationIds([]);
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      setHiddenConversationIds(Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : []);
+    } catch {
+      setHiddenConversationIds([]);
+    }
+  }, [hiddenStorageKey]);
+
+  useEffect(() => {
+    void loadHiddenConversationIds();
+  }, [loadHiddenConversationIds]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadHiddenConversationIds();
+    }, [loadHiddenConversationIds]),
+  );
 
   const loadList = useCallback(async (options?: { silent?: boolean }) => {
     if (!user?.account) {
@@ -162,7 +195,9 @@ export default function ChatScreen() {
     if (!options?.silent) setLoading(true);
     try {
       const result = await fetchConversationList(user.account);
-      const nextList = result.filter(hasMessages);
+      const nextList = Array.isArray(result)
+        ? result.filter((item) => String(item?.id || '').trim())
+        : [];
       const nextMarkers = await readChatReadMarkers();
       const nextTimeMarkers = await ensureChatMessageTimeMarkers(user.account, nextList);
       setMarkers(nextMarkers);
@@ -220,6 +255,118 @@ export default function ChatScreen() {
     }, [loadList, user?.account])
   );
 
+  async function saveHiddenConversationIds(nextIds: string[]) {
+    setHiddenConversationIds(nextIds);
+    if (!hiddenStorageKey) return;
+    try {
+      await AsyncStorage.setItem(hiddenStorageKey, JSON.stringify(nextIds));
+    } catch {
+      // ignore storage failure
+    }
+  }
+
+  async function hideConversation(item: ConversationItem) {
+    const targetId = String(item.id || '').trim();
+    if (!targetId) return;
+    const nextIds = Array.from(new Set([...hiddenConversationIds, targetId]));
+    await saveHiddenConversationIds(nextIds);
+  }
+
+  async function clearConversation(item: ConversationItem) {
+    const targetUser = String(item.id || '').trim();
+    if (!targetUser || !user?.account) return;
+    const ok = await feedback.confirm({
+      title: '清空消息',
+      message: `确认清空与「${item.title || targetUser}」的聊天记录吗？`,
+      confirmLabel: '清空',
+      cancelLabel: '取消',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await clearConversationMessages(user.account, targetUser);
+      setList((current) =>
+        current.map((entry) =>
+          String(entry.id) === targetUser
+            ? {
+                ...entry,
+                read: 0,
+                historyMessage: [],
+              }
+            : entry,
+        ),
+      );
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '清空消息失败');
+    }
+  }
+
+  async function deleteConversation(item: ConversationItem) {
+    const targetUser = String(item.id || '').trim();
+    if (!targetUser || !user?.account) return;
+    const ok = await feedback.confirm({
+      title: '删除消息',
+      message: `确认删除与「${item.title || targetUser}」的会话吗？删除后无法恢复。`,
+      confirmLabel: '删除',
+      cancelLabel: '取消',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await deleteConversationMessages(user.account, targetUser);
+      setList((current) => current.filter((entry) => String(entry.id) !== targetUser));
+      const nextHiddenIds = hiddenConversationIds.filter((id) => id !== targetUser);
+      await saveHiddenConversationIds(nextHiddenIds);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除消息失败');
+    }
+  }
+
+  function renderRowActions(item: ConversationItem, progress: Animated.AnimatedInterpolation<number>) {
+    const actionsTranslate = progress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [252, 0],
+      extrapolate: 'clamp',
+    });
+    const hideActionTranslate = progress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [36, 0],
+      extrapolate: 'clamp',
+    });
+    const clearActionTranslate = progress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [24, 0],
+      extrapolate: 'clamp',
+    });
+    const deleteActionTranslate = progress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [12, 0],
+      extrapolate: 'clamp',
+    });
+
+    return (
+      <Animated.View style={[styles.rowActions, { transform: [{ translateX: actionsTranslate }] }]}>
+        <Animated.View style={[styles.rowActionAnimated, { transform: [{ translateX: hideActionTranslate }] }]}>
+          <Pressable style={[styles.rowActionBtn, styles.rowActionHide]} onPress={() => void hideConversation(item)}>
+            <ThemedText style={styles.rowActionText}>隐藏</ThemedText>
+          </Pressable>
+        </Animated.View>
+        <Animated.View style={[styles.rowActionAnimated, { transform: [{ translateX: clearActionTranslate }] }]}>
+          <Pressable style={[styles.rowActionBtn, styles.rowActionClear]} onPress={() => void clearConversation(item)}>
+            <ThemedText style={styles.rowActionText}>清空消息</ThemedText>
+          </Pressable>
+        </Animated.View>
+        <Animated.View style={[styles.rowActionAnimated, { transform: [{ translateX: deleteActionTranslate }] }]}>
+          <Pressable style={[styles.rowActionBtn, styles.rowActionDelete]} onPress={() => void deleteConversation(item)}>
+            <ThemedText style={styles.rowActionText}>删除消息</ThemedText>
+          </Pressable>
+        </Animated.View>
+      </Animated.View>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ThemedView style={styles.root}>
@@ -228,7 +375,7 @@ export default function ChatScreen() {
         </View>
 
         <View style={styles.shortcutRow}>
-          <Pressable style={styles.shortcutWrap}>
+          <Pressable style={styles.shortcutWrap} onPress={() => router.push('/chat-likes')}>
             <View style={[styles.shortcutIcon, { backgroundColor: '#FCEAE8' }]}>
               <Image source={shortcutIcons.likes} style={styles.shortcutImage} contentFit="contain" />
             </View>
@@ -240,7 +387,7 @@ export default function ChatScreen() {
             </View>
             <ThemedText style={styles.shortcutText}>我的关注</ThemedText>
           </Pressable>
-          <Pressable style={styles.shortcutWrap}>
+          <Pressable style={styles.shortcutWrap} onPress={() => router.push('/chat-comments')}>
             <View style={[styles.shortcutIcon, { backgroundColor: '#DDF0EA' }]}>
               <Image source={shortcutIcons.comments} style={styles.shortcutImage} contentFit="contain" />
             </View>
@@ -249,65 +396,71 @@ export default function ChatScreen() {
         </View>
 
         <FlatList
-          data={list}
+          data={visibleList}
           keyExtractor={(item, index) => `${item.id}-${index}`}
           contentContainerStyle={styles.list}
           refreshing={loading}
           onRefresh={() => void loadList()}
           ListEmptyComponent={
             <View style={styles.empty}>
-              {loading ? <ActivityIndicator /> : <ThemedText style={styles.emptyText}>{error || '暂无会话'}</ThemedText>}
+              {loading ? <AppActivityIndicator label="正在加载会话" /> : <ThemedText style={styles.emptyText}>{error || '暂无会话'}</ThemedText>}
             </View>
           }
           renderItem={({ item }) => {
             const unread = user?.account ? itemUnread(user.account, item, markers) : 0;
             return (
-              <Pressable
-                style={styles.row}
-                onPress={() => {
-                  if (user?.account) {
-                    setMarkers((prev) => ({
-                      ...prev,
-                      [`${user.account}:${item.id}`]: {
-                        messageKey: latestMessageKey(item),
-                        readCount: Math.max(0, Number(item.read || 0)),
+              <Swipeable
+                overshootRight={false}
+                friction={1.8}
+                rightThreshold={36}
+                renderRightActions={(progress) => renderRowActions(item, progress)}>
+                <Pressable
+                  style={styles.row}
+                  onPress={() => {
+                    if (user?.account) {
+                      setMarkers((prev) => ({
+                        ...prev,
+                        [`${user.account}:${item.id}`]: {
+                          messageKey: latestMessageKey(item),
+                          readCount: Math.max(0, Number(item.read || 0)),
+                        },
+                      }));
+                      void writeConversationReadMarker(user.account, item);
+                    }
+                    router.push({
+                      pathname: '/chat/[id]',
+                      params: {
+                        id: String(item.id || ''),
+                        title: String(item.title || item.id || ''),
+                        url: String(item.url || ''),
                       },
-                    }));
-                    void writeConversationReadMarker(user.account, item);
-                  }
-                  router.push({
-                    pathname: '/chat/[id]',
-                    params: {
-                      id: String(item.id || ''),
-                      title: String(item.title || item.id || ''),
-                      url: String(item.url || ''),
-                    },
-                  });
-                }}>
-                <View style={styles.avatarWrap}>
-                  {avatar(item.url) ? (
-                    <Image source={{ uri: avatar(item.url) }} style={styles.avatar} contentFit="cover" />
-                  ) : (
-                    <View style={[styles.avatar, styles.avatarFallback]} />
-                  )}
-                  {unread > 0 ? (
-                    <View style={styles.badge}>
-                      <ThemedText style={styles.badgeText}>{unread > 99 ? '99+' : unread}</ThemedText>
-                    </View>
-                  ) : null}
-                </View>
+                    });
+                  }}>
+                  <View style={styles.avatarWrap}>
+                    {avatar(item.url) ? (
+                      <Image source={{ uri: avatar(item.url) }} style={styles.avatar} contentFit="cover" />
+                    ) : (
+                      <View style={[styles.avatar, styles.avatarFallback]} />
+                    )}
+                    {unread > 0 ? (
+                      <View style={styles.badge}>
+                        <ThemedText style={styles.badgeText}>{unread > 99 ? '99+' : unread}</ThemedText>
+                      </View>
+                    ) : null}
+                  </View>
 
-                <View style={styles.main}>
-                  <ThemedText style={styles.name} numberOfLines={1}>{item.title || item.id}</ThemedText>
-                  <ThemedText style={styles.preview} numberOfLines={1}>{itemPreview(item)}</ThemedText>
-                </View>
+                  <View style={styles.main}>
+                    <ThemedText style={styles.name} numberOfLines={1}>{item.title || item.id}</ThemedText>
+                    <ThemedText style={styles.preview} numberOfLines={1}>{itemPreview(item)}</ThemedText>
+                  </View>
 
-                <View style={styles.right}>
-                  <ThemedText style={styles.time} numberOfLines={1}>
-                    {formatMessageTime(conversationTimeValue(user?.account, item, timeMarkers))}
-                  </ThemedText>
-                </View>
-              </Pressable>
+                  <View style={styles.right}>
+                    <ThemedText style={styles.time} numberOfLines={1}>
+                      {formatMessageTime(conversationTimeValue(user?.account, item, timeMarkers))}
+                    </ThemedText>
+                  </View>
+                </Pressable>
+              </Swipeable>
             );
           }}
         />
@@ -377,4 +530,23 @@ const styles = StyleSheet.create({
   preview: { fontSize: 13, color: '#8E8E93' },
   right: { width: 88, alignItems: 'flex-end', justifyContent: 'flex-start', height: 54, paddingTop: 6, marginRight: 8 },
   time: { width: 88, fontSize: 11, color: '#8E8E93', textAlign: 'right' },
+  rowActions: {
+    width: 252,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    justifyContent: 'flex-end',
+    overflow: 'hidden',
+  },
+  rowActionAnimated: { alignSelf: 'stretch' },
+  rowActionBtn: {
+    width: 84,
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  rowActionHide: { backgroundColor: '#8E8E93' },
+  rowActionClear: { backgroundColor: '#F5A623' },
+  rowActionDelete: { backgroundColor: '#FF2442' },
+  rowActionText: { color: '#FFF', fontSize: 14, fontWeight: '600', textAlign: 'center' },
 });

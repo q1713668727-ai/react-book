@@ -1,10 +1,11 @@
 import { Image } from 'expo-image';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import {
-  ActivityIndicator,
   Animated,
   FlatList,
   Modal,
@@ -17,29 +18,33 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { useFeedback } from '@/components/app-feedback';
+import { AppActivityIndicator } from '@/components/app-loading';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
 import { useAuth } from '@/contexts/auth-context';
+import { hasContentRef, setContentRef } from '@/lib/content-refs';
 import { postJson } from '@/lib/post-json';
 import MenuIcon from '@/public/icon/mulu.svg';
-import ShareIcon from '@/public/icon/fenxiang.svg';
 import SettingsIcon from '@/public/icon/shezhi.svg';
 import MenIcon from '@/public/icon/men-line.svg';
 import WomenIcon from '@/public/icon/women-line.svg';
 import LikedIcon from '@/public/icon/xihuan.svg';
 import UnlikedIcon from '@/public/icon/xihuan_1.svg';
+import ScanIcon from '@/public/icon/saoyisao.svg';
 import type { AuthUser } from '@/types/auth';
 
 const defaultAvatar = require('../../public/image/avatar.jpg');
 const emptyNoteImage = require('../../public/image/null.png');
 const emptyCollectImage = require('../../public/image/collect.png');
+const PROFILE_IMAGE_CHUNK_SIZE = 220000;
 
 type SideMenuItem = {
   title: string;
   icon: string;
   family?: 'feather' | 'material';
-  route?: '/find' | '/settings';
+  route?: '/find' | '/settings' | '/coupons' | '/orders' | '/cart' | '/product-service-list';
 };
 
 const SIDE_MENU_ITEMS: SideMenuItem[] = [
@@ -47,16 +52,16 @@ const SIDE_MENU_ITEMS: SideMenuItem[] = [
   { title: '浏览记录', icon: 'clock' },
   { title: '钱包', icon: 'credit-card' },
   { title: '好物体验', icon: 'gift' },
-  { title: '订单', icon: 'clipboard' },
-  { title: '购物车', icon: 'shopping-cart' },
-  { title: '卡券', icon: 'ticket-percent-outline', family: 'material' },
+  { title: '订单', icon: 'clipboard', route: '/orders' },
+  { title: '购物车', icon: 'shopping-cart', route: '/cart' },
+  { title: '卡券', icon: 'ticket-percent-outline', family: 'material', route: '/coupons' },
   { title: '心愿单', icon: 'calendar-heart', family: 'material' },
   { title: '账号会员', icon: 'shield-check-outline', family: 'material' },
 ];
 
 const SIDE_MENU_FOOTER_ITEMS: SideMenuItem[] = [
   { title: '设置', icon: 'settings', route: '/settings' },
-  { title: '客服', icon: 'headphones' },
+  { title: '客服', icon: 'headphones', route: '/product-service-list' },
   { title: '扫一扫', icon: 'scan' },
 ];
 
@@ -94,6 +99,7 @@ type ProfileNoteDto = {
   file?: string;
   contentType?: string;
   feedKey?: string;
+  hidden?: boolean | number | string;
 };
 
 type ProfileNoteResponse = {
@@ -111,6 +117,7 @@ type ProfileNote = {
   authorName: string;
   authorAvatar?: string;
   liked: boolean;
+  hidden: boolean;
 };
 
 const GAP = 8;
@@ -220,6 +227,14 @@ function formatRegion(value: RegionDraft) {
   return `${value.province} ${value.city} ${value.district}`;
 }
 
+function chunkText(text: string, size: number) {
+  const chunks: string[] = [];
+  for (let index = 0; index < text.length; index += size) {
+    chunks.push(text.slice(index, index + size));
+  }
+  return chunks;
+}
+
 function isVideoFileName(value: unknown) {
   return /\.(mp4|mov|m4v|webm|avi|mkv|flv|m3u8)$/i.test(String(value || ''));
 }
@@ -291,13 +306,15 @@ function toProfileNote(item: ProfileNoteDto, likedIds: Set<string>, fallbackAvat
     likes: Number(item.likes || 0),
     authorName: String(item.authorName || item.name || item.account || '用户'),
     authorAvatar: toAuthorAvatar(item, fallbackAvatar),
-    liked: likedIds.has(itemId) || likedIds.has(rawId),
+    liked: hasContentRef(likedIds, contentType, rawId),
+    hidden: Boolean(Number(item.hidden || 0)),
   };
 }
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { user, isReady } = useAuth();
+  const feedback = useFeedback();
+  const { user, isReady, updateUser } = useAuth();
   const { width } = useWindowDimensions();
   const [activeTab, setActiveTab] = useState<ProfileTab>('notes');
   const [profile, setProfile] = useState<ProfileUserResponse | null>(null);
@@ -312,6 +329,7 @@ export default function ProfileScreen() {
   const [editVisible, setEditVisible] = useState(false);
   const [savingField, setSavingField] = useState<EditableField | null>(null);
   const [editMessage, setEditMessage] = useState<string | null>(null);
+  const [uploadingImage, setUploadingImage] = useState<'avatar' | 'background' | null>(null);
   const [textEdit, setTextEdit] = useState<TextEditTarget>(null);
   const [textDraft, setTextDraft] = useState('');
   const [optionEdit, setOptionEdit] = useState<OptionEditTarget>(null);
@@ -374,6 +392,7 @@ export default function ProfileScreen() {
       const nextLikedIds = new Set(parseIdList(profileResult?.likes));
       const authorAvatar = typeof profileResult?.url === 'string' ? profileResult.url : typeof user.url === 'string' ? user.url : undefined;
       setProfile(profileResult ?? null);
+      if (profileResult) await updateUser(profileResult);
       setLikedIds(nextLikedIds);
       setNotes(Array.isArray(noteResult?.data) ? noteResult.data.map((item) => toProfileNote(item, nextLikedIds, authorAvatar)) : []);
       setCollections(
@@ -387,7 +406,7 @@ export default function ProfileScreen() {
       if (isRefresh) setRefreshing(false);
       else setLoadingProfile(false);
     }
-  }, [user?.account, user?.url]);
+  }, [user?.account, user?.url, updateUser]);
 
   useEffect(() => {
     void loadProfileData();
@@ -412,10 +431,7 @@ export default function ProfileScreen() {
     const previousLikedIds = new Set(likedIds);
     const nextLiked = !currentItem.liked;
     const nextLikes = Math.max(0, currentItem.likes + (nextLiked ? 1 : -1));
-    const nextLikedIds = new Set(previousLikedIds);
-
-    if (nextLiked) nextLikedIds.add(itemId);
-    else nextLikedIds.delete(itemId);
+    const nextLikedIds = setContentRef(previousLikedIds, currentItem.contentType, currentItem.rawId, nextLiked);
 
     setPendingIds((prev) => [...prev, itemId]);
     setLikedIds(nextLikedIds);
@@ -464,7 +480,15 @@ export default function ProfileScreen() {
 
   function onSideMenuPress(item: SideMenuItem) {
     closeSideMenu(() => {
-      if (item.route) router.push(item.route);
+      if (item.title === '心愿单') {
+        router.push({ pathname: '/cart', params: { mode: 'wish' } });
+        return;
+      }
+      if (item.route) {
+        router.push(item.route);
+        return;
+      }
+      feedback.toast('功能暂未开发');
     });
   }
 
@@ -535,13 +559,81 @@ export default function ProfileScreen() {
         const base = prev ?? (user as ProfileUserResponse);
         return { ...base, [field]: data };
       });
-      setEditMessage('保存成功');
+      await updateUser({ [field]: data } as Partial<AuthUser>);
+      feedback.toast('保存成功');
       return true;
     } catch (err) {
       setEditMessage(err instanceof Error ? err.message : '保存失败');
       return false;
     } finally {
       setSavingField(null);
+    }
+  }
+
+  async function pickAndUploadProfileImage(kind: 'avatar' | 'background') {
+    if (!user?.account) {
+      router.push('/login');
+      return;
+    }
+    if (uploadingImage) return;
+
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setEditMessage('需要相册权限才能选择图片');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: kind === 'avatar' ? [1, 1] : [16, 9],
+      quality: 0.88,
+    });
+    if (result.canceled || !result.assets[0]?.uri) return;
+
+    setUploadingImage(kind);
+    setEditMessage(kind === 'avatar' ? '头像上传中...' : '背景图上传中...');
+    try {
+      const asset = result.assets[0];
+      const base64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
+      const chunks = chunkText(base64, PROFILE_IMAGE_CHUNK_SIZE);
+      const chunkPath = kind === 'avatar' ? '/login/regAvatar' : '/user/setBackground';
+      const endPath = kind === 'avatar' ? '/login/regAvatarEnd' : '/user/setBackgroundEnd';
+
+      for (let index = 0; index < chunks.length; index += 1) {
+        await postJson(chunkPath, {
+          account: user.account,
+          data: {
+            hash: index,
+            chunk: chunks[index],
+          },
+        });
+      }
+
+      const { result: uploadResult } = await postJson<{ path?: string }>(endPath, {
+        account: user.account,
+        ...(kind === 'avatar' ? { type: 'set' } : {}),
+      });
+      const nextPath = uploadResult?.path;
+      if (!nextPath) throw new Error(kind === 'avatar' ? '头像上传未返回图片地址' : '背景图上传未返回图片地址');
+
+      setProfile((prev) => {
+        const base = prev ?? (user as ProfileUserResponse);
+        return kind === 'avatar'
+          ? { ...base, url: nextPath, avatar: nextPath }
+          : { ...base, background: nextPath };
+      });
+      await updateUser(kind === 'avatar' ? { url: nextPath, avatar: nextPath } : { background: nextPath });
+      if (kind === 'avatar') {
+        setNotes((prev) => prev.map((item) => ({ ...item, authorAvatar: resolveMediaUrl(nextPath) })));
+        setCollections((prev) => prev.map((item) => ({ ...item, authorAvatar: resolveMediaUrl(nextPath) })));
+      }
+      setEditMessage(null);
+      feedback.toast(kind === 'avatar' ? '头像上传成功' : '背景图上传成功');
+    } catch (err) {
+      setEditMessage(err instanceof Error ? err.message : kind === 'avatar' ? '头像上传失败' : '背景图上传失败');
+    } finally {
+      setUploadingImage(null);
     }
   }
 
@@ -622,9 +714,6 @@ export default function ProfileScreen() {
                   <Pressable style={styles.heroIconBtn} onPress={openSideMenu}>
                     <MenuIcon width={25} height={25} color="#FFF" />
                   </Pressable>
-                  <Pressable style={styles.heroIconBtn} onPress={() => router.push('/search')}>
-                    <ShareIcon width={24} height={24} color="#FFF" />
-                  </Pressable>
                 </View>
 
                 <View style={styles.identityRow}>
@@ -651,7 +740,7 @@ export default function ProfileScreen() {
                 </View>
 
                 {!isReady ? (
-                  <ActivityIndicator style={styles.authLoading} />
+                  <AppActivityIndicator compact style={styles.authLoading} />
                 ) : user ? (
                   <View style={styles.profileActionRow}>
                     <View style={styles.userBar}>
@@ -700,7 +789,6 @@ export default function ProfileScreen() {
                 </View>
               </View>
 
-              {loadingProfile ? <ActivityIndicator style={styles.loadingInline} /> : null}
               {loadError ? <ThemedText style={styles.errorText}>{loadError}</ThemedText> : null}
             </View>
           }
@@ -708,7 +796,7 @@ export default function ProfileScreen() {
             user ? (
               <View style={styles.emptyBlock}>
                 {loadingProfile ? (
-                  <ActivityIndicator />
+                  <AppActivityIndicator label="正在加载资料" />
                 ) : (
                   <>
                     <Image source={emptyImage} style={styles.emptyImage} contentFit="contain" />
@@ -743,6 +831,11 @@ export default function ProfileScreen() {
                   {item.contentType === 'video' ? (
                     <View style={styles.videoBadge}>
                       <ThemedText style={styles.videoBadgeText}>▶</ThemedText>
+                    </View>
+                  ) : null}
+                  {item.hidden ? (
+                    <View style={styles.hiddenBadge}>
+                      <Feather name="eye-off" size={14} color="#FFFFFF" />
                     </View>
                   ) : null}
                   <View style={styles.noteBody}>
@@ -813,12 +906,14 @@ export default function ProfileScreen() {
                 <ScrollView contentContainerStyle={styles.drawerContent}>
                   <Pressable
                     style={styles.avatarEditBox}
-                    onPress={() => setEditMessage('当前 RN 项目未安装图片选择依赖，头像上传先保持后端已有图片')}>
+                    disabled={!!uploadingImage}
+                    onPress={() => void pickAndUploadProfileImage('avatar')}>
                     {avatarUri ? (
                       <Image source={{ uri: avatarUri }} style={styles.editAvatar} contentFit="cover" />
                     ) : (
                       <Image source={defaultAvatar} style={styles.editAvatar} contentFit="cover" />
                     )}
+                    <ThemedText style={styles.editImageHint}>{uploadingImage === 'avatar' ? '上传中...' : '更换头像'}</ThemedText>
                   </Pressable>
 
                   <View style={styles.editList}>
@@ -853,16 +948,17 @@ export default function ProfileScreen() {
                     />
                     <Pressable
                       style={styles.editBgRow}
-                      onPress={() => setEditMessage('当前 RN 项目未安装图片选择依赖，背景图上传先保持后端已有图片')}>
+                      disabled={!!uploadingImage}
+                      onPress={() => void pickAndUploadProfileImage('background')}>
                       <View style={styles.editBgText}>
                         <ThemedText style={styles.editRowTitle}>背景图</ThemedText>
-                        <ThemedText numberOfLines={1} style={styles.editRowValue}>{fieldValue('background')}</ThemedText>
+                        <ThemedText style={styles.editImageHint}>{uploadingImage === 'background' ? '上传中...' : '点击更换'}</ThemedText>
                       </View>
                       {bgUri ? <Image source={{ uri: bgUri }} style={styles.editBgPreview} contentFit="cover" /> : <View style={styles.editBgPreview} />}
                     </Pressable>
                   </View>
 
-                  {editMessage ? <ThemedText style={editMessage === '保存成功' ? styles.editSuccess : styles.editError}>{editMessage}</ThemedText> : null}
+                  {editMessage ? <ThemedText style={styles.editError}>{editMessage}</ThemedText> : null}
                 </ScrollView>
               </SafeAreaView>
             </Animated.View>
@@ -996,6 +1092,10 @@ export default function ProfileScreen() {
 
 function SideMenuIcon({ item, size = 22 }: { item: SideMenuItem; size?: number }) {
   const color = '#343941';
+
+  if (item.icon === 'scan') {
+    return <ScanIcon width={size} height={size} color={color} />;
+  }
 
   if (item.family === 'material') {
     return <MaterialCommunityIcons name={item.icon as never} size={size} color={color} />;
@@ -1150,6 +1250,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   videoBadgeText: { color: '#FFF', fontSize: 12, marginLeft: 2, lineHeight: 14 },
+  hiddenBadge: {
+    position: 'absolute',
+    left: 8,
+    top: 8,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(14,16,22,0.68)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   emptyBlock: { alignItems: 'center', justifyContent: 'center', paddingVertical: 32, gap: 10 },
   emptyImage: { width: 210, height: 168, opacity: 0.9 },
   emptyText: { fontSize: 14, color: '#8E8E93' },
@@ -1210,10 +1321,11 @@ const styles = StyleSheet.create({
   drawerTitle: { fontSize: 17, fontWeight: '700', color: '#111' },
   drawerHeaderSpace: { width: 40 },
   drawerContent: { paddingBottom: 28 },
-  avatarEditBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 28 },
+  avatarEditBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 28, gap: 8 },
   editAvatar: { width: 96, height: 96, borderRadius: 48, backgroundColor: '#E5E5E5' },
   editAvatarFallback: { width: 96, height: 96, borderRadius: 48, backgroundColor: '#E5E5E5', alignItems: 'center', justifyContent: 'center' },
   editAvatarLetter: { fontSize: 30, color: '#6F7688', fontWeight: '700' },
+  editImageHint: { fontSize: 12, color: '#8A8A8E', fontWeight: '500' },
   editList: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#EFEFF2' },
   editRow: {
     minHeight: 52,
@@ -1241,7 +1353,6 @@ const styles = StyleSheet.create({
   },
   editBgText: { flex: 1, gap: 4 },
   editBgPreview: { width: 58, height: 46, borderRadius: 6, backgroundColor: '#E5E5EA' },
-  editSuccess: { marginTop: 14, textAlign: 'center', color: '#1E8E3E', fontSize: 13 },
   editError: { marginTop: 14, textAlign: 'center', color: '#D43838', fontSize: 13, paddingHorizontal: 16 },
   sheetRoot: { flex: 1, justifyContent: 'flex-end' },
   sheetBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.26)' },

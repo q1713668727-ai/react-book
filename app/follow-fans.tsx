@@ -1,9 +1,10 @@
 import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AppActivityIndicator } from '@/components/app-loading';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
@@ -103,7 +104,7 @@ export default function FollowFansScreen() {
           contentContainerStyle={styles.list}
           ListEmptyComponent={
             <View style={styles.empty}>
-              {loading ? <ActivityIndicator /> : <ThemedText style={styles.emptyText}>{error || '暂无数据'}</ThemedText>}
+              {loading ? <AppActivityIndicator label="正在加载" /> : <ThemedText style={styles.emptyText}>{error || '暂无数据'}</ThemedText>}
             </View>
           }
           renderItem={({ item }) => {

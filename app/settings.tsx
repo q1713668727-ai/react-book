@@ -2,6 +2,7 @@ import { Stack, useRouter } from 'expo-router';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { useFeedback } from '@/components/app-feedback';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/auth-context';
@@ -10,18 +11,19 @@ import BackIcon from '@/public/icon/fanhuijiantou.svg';
 type SettingRow = {
   title: string;
   value?: string;
-  route?: '/change-password';
+  route?: '/change-password' | '/address-list';
 };
 
 const groups: SettingRow[][] = [
   [{ title: '修改密码', route: '/change-password' }, { title: '隐私设置' }],
-  [{ title: '通知设置' }, { title: '收货地址' }],
+  [{ title: '通知设置' }, { title: '收货地址', route: '/address-list' }],
   [{ title: '青少年模式', value: '未开启' }, { title: '深色模式' }],
   [{ title: '帮助与客服' }, { title: '鼓励一下' }, { title: '个人信息收集清单' }, { title: '第三方信息共享清单' }, { title: '关于 账户信息' }],
 ];
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const feedback = useFeedback();
   const { signOut } = useAuth();
 
   async function logout() {
@@ -49,7 +51,11 @@ export default function SettingsScreen() {
                   key={item.title}
                   style={[styles.row, index > 0 && styles.rowDivider]}
                   onPress={() => {
-                    if (item.route) router.push(item.route);
+                    if (item.route) {
+                      router.push(item.route);
+                      return;
+                    }
+                    feedback.toast('功能暂未开发');
                   }}>
                   <ThemedText style={styles.rowTitle}>{item.title}</ThemedText>
                   <View style={styles.rowRight}>

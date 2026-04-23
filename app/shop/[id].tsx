@@ -1,40 +1,145 @@
+import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
-import { FlatList, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { FlatList, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AppActivityIndicator } from '@/components/app-loading';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { fetchMarketProducts, fetchMarketShop, type MarketProduct, type MarketShop } from '@/lib/market-api';
 import BackIcon from '@/public/icon/fanhuijiantou.svg';
-import MessageIcon from '@/public/icon/xiaoxi.svg';
 import PictureIcon from '@/public/icon/tupian.svg';
 import SearchIcon from '@/public/icon/sousuo.svg';
-import ShareIcon from '@/public/icon/fenxiang.svg';
 
-const tabs = ['综合', '销量', '新品', '价格'];
-const products = [
-  { id: 'shop-bed-1', name: '卡得利 · 意式极简悬浮床 20cm加厚靠包', price: '3997', sold: '已售8' },
-  { id: 'shop-bed-2', name: '卡得利 · 大象耳朵床 北欧主卧双人床', price: '2256', sold: '已售86' },
-  { id: 'shop-bed-3', name: '卡得利 · 软靠真皮床 小户型储物款', price: '3180', sold: '已售24' },
-  { id: 'shop-bed-4', name: '卡得利 · 黑白撞色现代床 高弹海绵靠背', price: '2899', sold: '已售52' },
-  { id: 'shop-bed-5', name: '卡得利 · 奶油风云朵床 主卧婚床套装', price: '4590', sold: '已售17' },
-  { id: 'shop-bed-6', name: '卡得利 · 胡桃木框架床 静音稳固排骨架', price: '3699', sold: '已售39' },
-];
+const tabs = ['综合', '销量', '新品', '价格'] as const;
+type SortTab = typeof tabs[number];
+type SortableTab = Exclude<SortTab, '综合'>;
+type SortDirection = 'asc' | 'desc';
+
+function formatPrice(value: number) {
+  return Number(value || 0).toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
+}
+
+function compactCount(value: number) {
+  if (value >= 10000) return `${Number((value / 10000).toFixed(1))}万`;
+  return String(value || 0);
+}
+
+function useDebouncedText(value: string, delay = 220) {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+
+  return debounced;
+}
 
 export default function ShopDetailScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id?: string; name?: string }>();
-  const shopName = String(params.name || '卡得利家具旗舰店');
-  const [activeTab, setActiveTab] = useState(tabs[0]);
-  const sortedProducts = useMemo(() => {
+  const [shop, setShop] = useState<MarketShop | null>(null);
+  const [activeTab, setActiveTab] = useState<SortTab>(tabs[0]);
+  const [loading, setLoading] = useState(true);
+  const [errorText, setErrorText] = useState('');
+  const [sortDirections, setSortDirections] = useState<Record<SortableTab, SortDirection>>({
+    销量: 'desc',
+    新品: 'desc',
+    价格: 'asc',
+  });
+  const [showSearchBar, setShowSearchBar] = useState(false);
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [searchedProducts, setSearchedProducts] = useState<MarketProduct[] | null>(null);
+  const shopName = shop?.name || String(params.name || '店铺');
+  const debouncedKeyword = useDebouncedText(searchKeyword.trim());
+
+  useEffect(() => {
+    if (!params.id) return;
+    let alive = true;
+    setLoading(true);
+    fetchMarketShop(params.id)
+      .then((data) => {
+        if (!alive) return;
+        if (data) setShop(data);
+        setErrorText('');
+      })
+      .catch((error: Error) => {
+        if (!alive) return;
+        setErrorText(error.message || '店铺加载失败');
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [params.id]);
+
+  useEffect(() => {
+    const shopId = Number(params.id || shop?.id || 0);
+    if (!shopId || !debouncedKeyword) {
+      setSearchedProducts(null);
+      setSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setSearching(true);
+    fetchMarketProducts({ shopId, keyword: debouncedKeyword, limit: 100 })
+      .then((items) => {
+        if (!cancelled) setSearchedProducts(items);
+      })
+      .catch(() => {
+        if (!cancelled) setSearchedProducts([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSearching(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedKeyword, params.id, shop?.id]);
+
+  const sourceProducts = useMemo<MarketProduct[]>(() => {
+    if (!debouncedKeyword) return shop?.products || [];
+    return searchedProducts || [];
+  }, [debouncedKeyword, searchedProducts, shop?.products]);
+
+  const sortedProducts = useMemo<MarketProduct[]>(() => {
+    const products = sourceProducts;
     if (activeTab === '价格') {
-      return [...products].sort((a, b) => Number(a.price) - Number(b.price));
+      const factor = sortDirections.价格 === 'asc' ? 1 : -1;
+      return [...products].sort((a, b) => (a.price - b.price) * factor);
     }
     if (activeTab === '销量') {
-      return [...products].reverse();
+      const factor = sortDirections.销量 === 'asc' ? 1 : -1;
+      return [...products].sort((a, b) => (a.sold - b.sold) * factor);
+    }
+    if (activeTab === '新品') {
+      // createdAt 不在当前商品结构中，使用 id 近似发布时间排序。
+      const factor = sortDirections.新品 === 'asc' ? 1 : -1;
+      return [...products].sort((a, b) => (a.id - b.id) * factor);
     }
     return products;
-  }, [activeTab]);
+  }, [activeTab, sortDirections, sourceProducts]);
+
+  function handleTabPress(item: SortTab) {
+    if (item === '综合') {
+      setActiveTab(item);
+      return;
+    }
+    if (activeTab === item) {
+      setSortDirections((current) => ({
+        ...current,
+        [item]: current[item] === 'asc' ? 'desc' : 'asc',
+      }));
+      return;
+    }
+    setActiveTab(item);
+  }
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -45,35 +150,52 @@ export default function ShopDetailScreen() {
             <Pressable hitSlop={12} style={styles.headerIcon} onPress={() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/market'))}>
               <BackIcon width={24} height={24} color="#FFF" />
             </Pressable>
-            <View style={styles.headerTitle} />
-            <View style={styles.headerActions}>
-              <Pressable hitSlop={10} style={styles.headerIcon}>
-                <SearchIcon width={22} height={22} color="#FFF" />
-              </Pressable>
-              <Pressable hitSlop={10} style={styles.headerIcon}>
-                <MessageIcon width={22} height={22} color="#FFF" />
-              </Pressable>
-              <Pressable hitSlop={10} style={styles.headerIcon}>
-                <ShareIcon width={22} height={22} color="#FFF" />
-              </Pressable>
-            </View>
+            {showSearchBar ? (
+              <>
+                <View style={styles.searchInputWrapInline}>
+                  <SearchIcon width={18} height={18} color="#C8CCD3" />
+                  <TextInput
+                    value={searchKeyword}
+                    onChangeText={setSearchKeyword}
+                    placeholder="搜索本店商品"
+                    placeholderTextColor="#B9BEC7"
+                    style={styles.searchInput}
+                    returnKeyType="search"
+                  />
+                </View>
+                <Pressable hitSlop={8} style={styles.searchCancelBtnInline} onPress={() => {
+                  setShowSearchBar(false);
+                  setSearchKeyword('');
+                }}>
+                  <ThemedText style={styles.searchCancelText}>取消</ThemedText>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <View style={styles.headerTitle} />
+                <View style={styles.headerActions}>
+                  <Pressable hitSlop={10} style={styles.headerIcon} onPress={() => setShowSearchBar(true)}>
+                    <SearchIcon width={22} height={22} color="#FFF" />
+                  </Pressable>
+                </View>
+              </>
+            )}
           </View>
-
           <View style={styles.shopInfo}>
             <View style={styles.logo}>
-              <ThemedText style={styles.logoText}>CALDRI</ThemedText>
+              {shop?.avatarUrl ? <Image source={{ uri: shop.avatarUrl }} style={styles.logoImage} contentFit="cover" /> : <ThemedText style={styles.logoText}>{shopName.slice(0, 4).toUpperCase()}</ThemedText>}
             </View>
             <View style={styles.shopCopy}>
               <ThemedText numberOfLines={1} style={styles.shopName}>{shopName}</ThemedText>
               <View style={styles.scoreRow}>
                 <ThemedText style={styles.stars}>★★★★★</ThemedText>
-                <ThemedText style={styles.score}>4.9</ThemedText>
-                <ThemedText style={styles.followed}>已售 962</ThemedText>
+                <ThemedText style={styles.score}>{formatPrice(shop?.rating || 5)}</ThemedText>
+                <ThemedText style={styles.followed}>已售 {compactCount(shop?.sales || 0)}</ThemedText>
               </View>
               <View style={styles.metaRow}>
-                <ThemedText style={styles.metaText}>粉丝4.1万</ThemedText>
-                <ThemedText style={styles.metaText}>五星家具</ThemedText>
-                <ThemedText style={styles.metaText}>2黄冠店铺</ThemedText>
+                <ThemedText style={styles.metaText}>粉丝{compactCount(shop?.fans || 0)}</ThemedText>
+                <ThemedText style={styles.metaText}>{shop?.serviceLevel || '金牌客服'}</ThemedText>
+                {shop?.description ? <ThemedText numberOfLines={1} style={styles.metaText}>{shop.description}</ThemedText> : null}
               </View>
             </View>
           </View>
@@ -83,9 +205,19 @@ export default function ShopDetailScreen() {
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabContent}>
             {tabs.map((item) => {
               const active = item === activeTab;
+              const sortable = item !== '综合';
+              const direction = sortable ? sortDirections[item] : null;
               return (
-                <Pressable key={item} style={styles.tabItem} onPress={() => setActiveTab(item)}>
-                  <ThemedText style={[styles.tabText, active && styles.tabTextActive]}>{item}</ThemedText>
+                <Pressable key={item} style={styles.tabItem} onPress={() => handleTabPress(item)}>
+                  <View style={styles.tabLabelRow}>
+                    <ThemedText style={[styles.tabText, active && styles.tabTextActive]}>{item}</ThemedText>
+                    {sortable ? (
+                      <View style={styles.sortArrows}>
+                        <ThemedText style={[styles.arrowText, active && direction === 'asc' && styles.arrowTextActive]}>▲</ThemedText>
+                        <ThemedText style={[styles.arrowText, active && direction === 'desc' && styles.arrowTextActive]}>▼</ThemedText>
+                      </View>
+                    ) : null}
+                  </View>
                   {active ? <View style={styles.tabLine} /> : null}
                 </Pressable>
               );
@@ -93,35 +225,42 @@ export default function ShopDetailScreen() {
           </ScrollView>
         </View>
 
-        <FlatList
-          data={sortedProducts}
-          keyExtractor={(item) => item.id}
-          numColumns={2}
-          columnWrapperStyle={styles.productColumns}
-          contentContainerStyle={styles.productList}
-          showsVerticalScrollIndicator={false}
-          renderItem={({ item }) => (
-            <Pressable
-              style={styles.productCard}
-              onPress={() =>
-                router.push({
-                  pathname: '/product/[id]',
-                  params: { id: item.id, name: item.name, price: item.price, sold: item.sold.replace('已售', '') },
-                })
-              }>
-              <View style={styles.productImage}>
-                <PictureIcon width={74} height={74} color="#BFC4CC" />
-              </View>
-              <View style={styles.productBody}>
-                <ThemedText numberOfLines={2} style={styles.productName}>{item.name}</ThemedText>
-                <View style={styles.productMeta}>
-                  <ThemedText style={styles.productPrice}>¥{item.price}</ThemedText>
-                  <ThemedText style={styles.productSold}>{item.sold}</ThemedText>
+        {loading || searching ? (
+          <View style={styles.stateBox}><AppActivityIndicator label="正在加载店铺" /></View>
+        ) : errorText ? (
+          <View style={styles.stateBox}><ThemedText style={styles.stateText}>{errorText}</ThemedText></View>
+        ) : (
+          <FlatList
+            data={sortedProducts}
+            keyExtractor={(item) => String(item.id)}
+            numColumns={2}
+            columnWrapperStyle={styles.productColumns}
+            contentContainerStyle={styles.productList}
+            showsVerticalScrollIndicator={false}
+            ListEmptyComponent={<View style={styles.stateBox}><ThemedText style={styles.stateText}>{debouncedKeyword ? '没有找到相关商品' : '店铺暂无上架商品'}</ThemedText></View>}
+            renderItem={({ item }) => (
+              <Pressable
+                style={styles.productCard}
+                onPress={() =>
+                  router.push({
+                    pathname: '/product/[id]',
+                    params: { id: String(item.id), name: item.name, price: formatPrice(item.price), sold: item.soldText },
+                  })
+                }>
+                <View style={styles.productImage}>
+                  {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.productPhoto} contentFit="cover" /> : <PictureIcon width={74} height={74} color="#BFC4CC" />}
                 </View>
-              </View>
-            </Pressable>
-          )}
-        />
+                <View style={styles.productBody}>
+                  <ThemedText numberOfLines={2} style={styles.productName}>{item.name}</ThemedText>
+                  <View style={styles.productMeta}>
+                    <ThemedText style={styles.productPrice}>¥{formatPrice(item.price)}</ThemedText>
+                    <ThemedText style={styles.productSold}>已售 {item.soldText}</ThemedText>
+                  </View>
+                </View>
+              </Pressable>
+            )}
+          />
+        )}
       </ThemedView>
     </SafeAreaView>
   );
@@ -142,7 +281,21 @@ const styles = StyleSheet.create({
   },
   headerIcon: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { flex: 1 },
-  headerActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', width: 102 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', width: 34 },
+  searchInputWrapInline: {
+    flex: 1,
+    height: 36,
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#44464A',
+    marginLeft: 2,
+  },
+  searchCancelBtnInline: { height: 36, marginLeft: 8, paddingHorizontal: 2, alignItems: 'center', justifyContent: 'center' },
+  searchInput: { flex: 1, height: 36, color: '#FFF', padding: 0, fontSize: 14 },
+  searchCancelText: { fontSize: 13, color: '#E8EAEE', fontWeight: '700' },
   shopInfo: {
     flex: 1,
     flexDirection: 'row',
@@ -154,10 +307,12 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 36,
+    overflow: 'hidden',
     backgroundColor: '#FFF',
     alignItems: 'center',
     justifyContent: 'center',
   },
+  logoImage: { width: '100%', height: '100%' },
   logoText: { fontSize: 13, color: '#333', fontWeight: '900' },
   shopCopy: { flex: 1, gap: 7 },
   shopName: { fontSize: 18, color: '#FFF', fontWeight: '900' },
@@ -176,9 +331,15 @@ const styles = StyleSheet.create({
   },
   tabContent: { paddingHorizontal: 16, alignItems: 'center', gap: 30 },
   tabItem: { height: 48, minWidth: 42, alignItems: 'center', justifyContent: 'center', position: 'relative' },
+  tabLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   tabText: { fontSize: 14, color: '#8B9098', fontWeight: '700' },
   tabTextActive: { color: '#20242B', fontWeight: '900' },
+  sortArrows: { alignItems: 'center', justifyContent: 'center', marginTop: 1 },
+  arrowText: { fontSize: 8, lineHeight: 9, color: '#B7BCC5', fontWeight: '700' },
+  arrowTextActive: { color: '#20242B' },
   tabLine: { position: 'absolute', bottom: 5, width: 20, height: 3, borderRadius: 2, backgroundColor: '#20242B' },
+  stateBox: { minHeight: 260, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 },
+  stateText: { fontSize: 13, color: '#777D87', fontWeight: '700' },
   productList: { paddingHorizontal: 8, paddingTop: 8, paddingBottom: 24 },
   productColumns: { gap: 8, marginBottom: 10 },
   productCard: {
@@ -194,6 +355,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#E8E4DF',
   },
+  productPhoto: { width: '100%', height: '100%' },
   productBody: { paddingHorizontal: 8, paddingVertical: 9, gap: 6 },
   productName: { fontSize: 13, lineHeight: 18, color: '#20242B', fontWeight: '700' },
   productMeta: { flexDirection: 'row', alignItems: 'baseline', gap: 7 },

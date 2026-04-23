@@ -1,0 +1,5 @@
+The following packages should be updated for best compatibility with the installed expo version:
+  expo-file-system@55.0.16 - expected version: ~19.0.21
+  expo-image-picker@55.0.18 - expected version: ~17.0.10
+  expo-video-thumbnails@55.0.14 - expected version: ~10.0.8
+Your project may not work correctly until you install the expected versions of the packages.

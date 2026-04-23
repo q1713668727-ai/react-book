@@ -1,9 +1,9 @@
 import { Image } from 'expo-image';
-import { Video, ResizeMode, type AVPlaybackStatus } from 'expo-av';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ComponentType } from 'react';
+import { Feather } from '@expo/vector-icons';
 import {
-  ActivityIndicator,
+  Animated,
   FlatList,
   Keyboard,
   Modal,
@@ -16,19 +16,61 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { AppActivityIndicator } from '@/components/app-loading';
+import { useFeedback } from '@/components/app-feedback';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
 import { useAuth } from '@/contexts/auth-context';
+import { hasContentRef, setContentRef } from '@/lib/content-refs';
 import { postJson, postPublicJson } from '@/lib/post-json';
 import CommentIcon from '@/public/icon/pinglun.svg';
 import BackIcon from '@/public/icon/fanhuijiantou.svg';
 import CollectedIcon from '@/public/icon/shoucang.svg';
-import ShareIcon from '@/public/icon/fenxiang.svg';
 import SearchIcon from '@/public/icon/sousuo.svg';
 import UncollectedIcon from '@/public/icon/shoucang_1.svg';
 import LikedIcon from '@/public/icon/xihuan.svg';
 import UnlikedIcon from '@/public/icon/xihuan_1.svg';
+import MoreIcon from '@/public/icon/gengduo.svg';
+
+type AVPlaybackStatus = {
+  isLoaded: boolean;
+  durationMillis?: number;
+  positionMillis?: number;
+};
+
+type ExpoAvVideoRef = {
+  playAsync?: () => Promise<unknown>;
+  pauseAsync?: () => Promise<unknown>;
+};
+
+type ExpoAvModule = {
+  Video: ComponentType<any>;
+  ResizeMode: { COVER?: string };
+};
+
+let expoAvModule: ExpoAvModule | null = null;
+try {
+  // expo-av is removed from Expo Go in newer SDKs.
+  // Keep a safe runtime fallback to prevent route crash.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  expoAvModule = require('expo-av') as ExpoAvModule;
+} catch {
+  expoAvModule = null;
+}
+
+const VideoComponent = expoAvModule?.Video || null;
+const ResizeModeCover = expoAvModule?.ResizeMode?.COVER || 'cover';
+
+function safelyPause(ref: ExpoAvVideoRef | null | undefined) {
+  if (!ref?.pauseAsync) return;
+  void ref.pauseAsync().catch(() => undefined);
+}
+
+function safelyPlay(ref: ExpoAvVideoRef | null | undefined) {
+  if (!ref?.playAsync) return;
+  void ref.playAsync().catch(() => undefined);
+}
 
 type VideoDto = {
   id: number | string;
@@ -47,6 +89,7 @@ type VideoDto = {
   likes?: number | string;
   collects?: number | string;
   collect?: number | string;
+  hidden?: boolean | number | string;
   comment?: unknown;
 };
 
@@ -56,12 +99,14 @@ type FollowStatus = {
 
 type CommentItem = {
   id: string;
+  index: number;
   account: string;
   name: string;
   text: string;
   avatar?: string;
   date?: string;
   likeCount?: number;
+  liked?: boolean;
 };
 
 type VideoFeedItem = {
@@ -75,6 +120,7 @@ type VideoFeedItem = {
   videoUri?: string;
   likes: number;
   collects: number;
+  hidden: boolean;
   commentList: CommentItem[];
 };
 
@@ -103,17 +149,39 @@ function parseIdList(value: unknown): Set<string> {
   );
 }
 
-function parseCommentList(raw: unknown): CommentItem[] {
+function normalizeLikeUsers(value: unknown): { account?: string; name?: string; avatar?: string }[] {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return [];
+    try {
+      const parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return text.split(',').filter(Boolean).map((account) => ({ account }));
+    }
+  }
+  return [];
+}
+
+function parseCommentList(raw: unknown, viewerAccount = ''): CommentItem[] {
   if (Array.isArray(raw)) {
-    return raw.map((item, idx) => ({
+    return raw.map((item, idx) => {
+      const likeUsers = normalizeLikeUsers(item?.likeUsers || item?.likeAccounts || item?.likeUserInfo);
+      const liked = viewerAccount ? likeUsers.some((user) => String(user?.account || '').trim() === viewerAccount) : false;
+      return {
       id: String(item?.id ?? idx),
+      index: idx,
       account: String(item?.account || ''),
       name: String(item?.name || item?.account || '用户'),
       text: String(item?.text || ''),
       avatar: typeof item?.avatar === 'string' ? item.avatar : '',
       date: typeof item?.date === 'string' ? item.date : '',
-      likeCount: parseCount(item?.likeCount),
-    }));
+      likeCount: parseCount(item?.likeCount ?? item?.likes ?? likeUsers.length),
+      liked,
+    };
+    });
   }
 
   if (typeof raw === 'string') {
@@ -121,7 +189,7 @@ function parseCommentList(raw: unknown): CommentItem[] {
     if (!text) return [];
     try {
       const parsed = JSON.parse(text);
-      return parseCommentList(parsed);
+      return parseCommentList(parsed, viewerAccount);
     } catch {
       return text
         .split(';/')
@@ -129,14 +197,17 @@ function parseCommentList(raw: unknown): CommentItem[] {
         .map((item, idx): CommentItem | null => {
           try {
             const row = JSON.parse(item);
+            const likeUsers = normalizeLikeUsers(row?.likeUsers || row?.likeAccounts || row?.likeUserInfo);
             return {
               id: String(row?.id ?? idx),
+              index: idx,
               account: String(row?.account || ''),
               name: String(row?.name || row?.account || '用户'),
               text: String(row?.text || ''),
               avatar: typeof row?.avatar === 'string' ? row.avatar : '',
               date: typeof row?.date === 'string' ? row.date : '',
-              likeCount: parseCount(row?.likeCount),
+              likeCount: parseCount(row?.likeCount ?? row?.likes ?? likeUsers.length),
+              liked: viewerAccount ? likeUsers.some((user) => String(user?.account || '').trim() === viewerAccount) : false,
             };
           } catch {
             return null;
@@ -188,7 +259,7 @@ function toVideoCoverUri(item: VideoDto) {
   return resolveMediaUrl(coverPath);
 }
 
-function mapVideo(item: VideoDto): VideoFeedItem {
+function mapVideo(item: VideoDto, viewerAccount = ''): VideoFeedItem {
   const account = String(item.account || '');
   return {
     id: String(item.id),
@@ -201,7 +272,8 @@ function mapVideo(item: VideoDto): VideoFeedItem {
     videoUri: toVideoUri(item),
     likes: parseCount(item.likes),
     collects: parseCount(item.collects ?? item.collect),
-    commentList: parseCommentList(item.comment),
+    hidden: Boolean(Number(item.hidden || 0)),
+    commentList: parseCommentList(item.comment, viewerAccount),
   };
 }
 
@@ -209,6 +281,7 @@ export default function VideoScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id?: string }>();
   const { user } = useAuth();
+  const feedback = useFeedback();
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
   const pageHeight = windowHeight;
@@ -227,30 +300,68 @@ export default function VideoScreen() {
   const [error, setError] = useState<string | null>(null);
   const [pausedIds, setPausedIds] = useState<Set<string>>(new Set());
   const [playbackMap, setPlaybackMap] = useState<Record<string, PlaybackProgress>>({});
+  const [settingsVisible, setSettingsVisible] = useState(false);
+  const [hiddenPromptVisible, setHiddenPromptVisible] = useState(false);
+  const [pendingHidden, setPendingHidden] = useState(false);
+  const [deletePromptVisible, setDeletePromptVisible] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(false);
 
-  const videoRefs = useRef<Record<string, Video | null>>({});
+  const videoRefs = useRef<Record<string, ExpoAvVideoRef | null>>({});
   const listRef = useRef<FlatList<VideoFeedItem> | null>(null);
   const commentInputRef = useRef<TextInput | null>(null);
   const pausedIdsRef = useRef<Set<string>>(new Set());
+  const settingsTranslateY = useRef(new Animated.Value(280)).current;
   const targetId = Array.isArray(params.id) ? params.id[0] : params.id;
 
   const pauseAllVideos = useCallback(() => {
     Object.values(videoRefs.current).forEach((ref) => {
-      void ref?.pauseAsync().catch(() => undefined);
+      safelyPause(ref);
     });
   }, []);
 
   const pauseInactiveVideos = useCallback((activeId: string) => {
     Object.entries(videoRefs.current).forEach(([id, ref]) => {
       if (!ref || id === activeId) return;
-      void ref.pauseAsync().catch(() => undefined);
+      safelyPause(ref);
     });
   }, []);
 
   const current = items[activeIndex];
-  const currentLiked = current ? likedIds.has(`video-${current.id}`) || likedIds.has(current.id) : false;
-  const currentCollected = current ? collectIds.has(`video-${current.id}`) : false;
+  const currentLiked = current ? hasContentRef(likedIds, 'video', current.id) : false;
+  const currentCollected = current ? hasContentRef(collectIds, 'video', current.id) : false;
   const currentFollowed = current ? Boolean(followedMap[current.account]) : false;
+
+  function openSettingsSheet() {
+    settingsTranslateY.setValue(280);
+    setSettingsVisible(true);
+    Animated.timing(settingsTranslateY, {
+      toValue: 0,
+      duration: 240,
+      useNativeDriver: true,
+    }).start();
+  }
+
+  function closeSettingsSheet() {
+    Animated.timing(settingsTranslateY, {
+      toValue: 280,
+      duration: 190,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) setSettingsVisible(false);
+    });
+  }
+
+  function openHiddenPrompt() {
+    if (!current || current.account !== user?.account) return;
+    closeSettingsSheet();
+    setHiddenPromptVisible(true);
+  }
+
+  function openDeletePrompt() {
+    if (!current || current.account !== user?.account) return;
+    closeSettingsSheet();
+    setDeletePromptVisible(true);
+  }
 
   const currentComments = useMemo(() => {
     return Array.isArray(current?.commentList) ? current.commentList : [];
@@ -259,12 +370,12 @@ export default function VideoScreen() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const videoRes = await postPublicJson<VideoDto[]>('/video', targetId ? { targetId } : {});
+      const videoRes = await postPublicJson<VideoDto[]>('/video', targetId ? { targetId, account: user?.account || '' } : {});
       const userRes = user?.account
         ? await postJson<UserInfoResult>('/user/getUserInfo', { account: user.account }).catch(() => ({ result: { likes: '', collects: '' } as UserInfoResult }))
         : { result: { likes: '', collects: '' } as UserInfoResult };
 
-      const nextItems = Array.isArray(videoRes.result) ? videoRes.result.map(mapVideo) : [];
+      const nextItems = Array.isArray(videoRes.result) ? videoRes.result.map((item) => mapVideo(item, user?.account || '')) : [];
       const targetIndex = targetId ? Math.max(0, nextItems.findIndex((item) => item.id === String(targetId))) : 0;
       setItems(nextItems);
       setActiveIndex(targetIndex);
@@ -309,7 +420,7 @@ export default function VideoScreen() {
       if (activeId) pauseInactiveVideos(activeId);
       const currentRef = videoRefs.current[items[activeIndex]?.id || ''];
       if (items[activeIndex] && !pausedIds.has(items[activeIndex].id)) {
-        void currentRef?.playAsync().catch(() => undefined);
+        safelyPlay(currentRef);
       }
     });
   }, [items, activeIndex, pausedIds, pauseInactiveVideos]);
@@ -337,9 +448,9 @@ export default function VideoScreen() {
         const ref = videoRefs.current[item.id];
         if (!ref) return;
         if (idx === index) {
-          if (!pausedIdsRef.current.has(item.id)) void ref.playAsync().catch(() => undefined);
+          if (!pausedIdsRef.current.has(item.id)) safelyPlay(ref);
         } else {
-          void ref.pauseAsync().catch(() => undefined);
+          safelyPause(ref);
         }
       });
 
@@ -365,8 +476,8 @@ export default function VideoScreen() {
       return next;
     });
 
-    if (nextPaused) void ref?.pauseAsync().catch(() => undefined);
-    else void ref?.playAsync().catch(() => undefined);
+    if (nextPaused) safelyPause(ref);
+    else safelyPlay(ref);
   }
 
   function updatePlaybackStatus(id: string, status: AVPlaybackStatus) {
@@ -396,18 +507,12 @@ export default function VideoScreen() {
       return;
     }
 
-    const key = `video-${current.id}`;
     const prevLiked = currentLiked;
     const nextLiked = !prevLiked;
     const nextLikes = Math.max(0, current.likes + (nextLiked ? 1 : -1));
 
     const prevSet = new Set(likedIds);
-    const nextSet = new Set(likedIds);
-    if (nextLiked) nextSet.add(key);
-    else {
-      nextSet.delete(key);
-      nextSet.delete(current.id);
-    }
+    const nextSet = setContentRef(prevSet, 'video', current.id, nextLiked);
 
     setPendingLike(true);
     setLikedIds(nextSet);
@@ -437,18 +542,12 @@ export default function VideoScreen() {
       return;
     }
 
-    const key = `video-${current.id}`;
     const prevCollected = currentCollected;
     const nextCollected = !prevCollected;
     const nextCollects = Math.max(0, current.collects + (nextCollected ? 1 : -1));
 
     const prevSet = new Set(collectIds);
-    const nextSet = new Set(collectIds);
-    if (nextCollected) nextSet.add(key);
-    else {
-      nextSet.delete(key);
-      nextSet.delete(current.id);
-    }
+    const nextSet = setContentRef(prevSet, 'video', current.id, nextCollected);
 
     setPendingCollect(true);
     setCollectIds(nextSet);
@@ -468,6 +567,60 @@ export default function VideoScreen() {
       setError(err instanceof Error ? err.message : '收藏失败');
     } finally {
       setPendingCollect(false);
+    }
+  }
+
+  async function toggleHidden() {
+    if (!current || current.account !== user?.account || pendingHidden) return;
+
+    const previousHidden = current.hidden;
+    const nextHidden = !previousHidden;
+    setItems((prev) => prev.map((item, idx) => (idx === activeIndex ? { ...item, hidden: nextHidden } : item)));
+    setHiddenPromptVisible(false);
+    setPendingHidden(true);
+
+    try {
+      const { result } = await postJson<{ hidden?: boolean }>('/content/toggleHidden', {
+        account: user.account,
+        id: current.id,
+        contentType: 'video',
+        hidden: nextHidden,
+      });
+      let finalHidden = nextHidden;
+      if (typeof result?.hidden === 'boolean') {
+        finalHidden = Boolean(result.hidden);
+        setItems((prev) => prev.map((item, idx) => (idx === activeIndex ? { ...item, hidden: Boolean(result.hidden) } : item)));
+      }
+      setError(null);
+      feedback.toast(finalHidden ? '视频已隐藏' : '视频已取消隐藏');
+    } catch (err) {
+      setItems((prev) => prev.map((item, idx) => (idx === activeIndex ? { ...item, hidden: previousHidden } : item)));
+      setError(err instanceof Error ? err.message : '隐藏设置失败');
+    } finally {
+      setPendingHidden(false);
+    }
+  }
+
+  async function deleteVideo() {
+    if (!current || current.account !== user?.account || pendingDelete) return;
+
+    const deletingId = current.id;
+    setPendingDelete(true);
+    try {
+      await postJson('/content/delete', {
+        account: user.account,
+        id: deletingId,
+        contentType: 'video',
+        deleteFiles: true,
+      });
+      setError(null);
+      setDeletePromptVisible(false);
+      feedback.toast('视频已删除');
+      router.replace('/profile');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除失败');
+    } finally {
+      setPendingDelete(false);
     }
   }
 
@@ -525,21 +678,25 @@ export default function VideoScreen() {
       const nextComment: CommentItem = res.result
         ? {
             id: String(res.result.id || Date.now()),
+            index: current.commentList.length,
             account: String(res.result.account || user.account),
             name: String(res.result.name || user.name || user.account),
             text: String(res.result.text || text),
             avatar: String(res.result.avatar || user.url || ''),
             date: String(res.result.date || ''),
             likeCount: parseCount(res.result.likeCount),
+            liked: false,
           }
         : {
             id: String(Date.now()),
+            index: current.commentList.length,
             account: user.account,
             name: String(user.name || user.account),
             text,
             avatar: String(user.url || ''),
             date: new Date().toISOString().slice(0, 19).replace('T', ' '),
             likeCount: 0,
+            liked: false,
           };
 
       setItems((prev) =>
@@ -553,10 +710,76 @@ export default function VideoScreen() {
         )
       );
       setCommentText('');
+      feedback.toast('评论发布成功');
     } catch (err) {
       setError(err instanceof Error ? err.message : '评论失败');
     } finally {
       setCommentPending(false);
+    }
+  }
+
+  async function toggleVideoCommentLike(comment: CommentItem) {
+    if (!current || !user?.account) {
+      router.push('/login');
+      return;
+    }
+
+    const previousLiked = Boolean(comment.liked);
+    const nextLiked = !previousLiked;
+    const nextLikeCount = Math.max(0, parseCount(comment.likeCount) + (nextLiked ? 1 : -1));
+    setItems((prev) =>
+      prev.map((item, idx) =>
+        idx === activeIndex
+          ? {
+              ...item,
+              commentList: item.commentList.map((row) =>
+                row.id === comment.id ? { ...row, liked: nextLiked, likeCount: nextLikeCount } : row
+              ),
+            }
+          : item
+      )
+    );
+
+    try {
+      const { result } = await postJson<{ liked?: boolean; likeCount?: number }>('/upload/addComment', {
+        id: current.id,
+        contentType: 'video',
+        action: 'like',
+        commentId: comment.id,
+        commentIndex: comment.index,
+        parentId: 0,
+        account: user.account,
+        name: user.name || user.account,
+        avatar: user.url || '',
+      });
+      if (result) {
+        setItems((prev) =>
+          prev.map((item, idx) =>
+            idx === activeIndex
+              ? {
+                  ...item,
+                  commentList: item.commentList.map((row) =>
+                    row.id === comment.id ? { ...row, liked: Boolean(result.liked), likeCount: parseCount(result.likeCount) } : row
+                  ),
+                }
+              : item
+          )
+        );
+      }
+    } catch (err) {
+      setItems((prev) =>
+        prev.map((item, idx) =>
+          idx === activeIndex
+            ? {
+                ...item,
+                commentList: item.commentList.map((row) =>
+                  row.id === comment.id ? { ...row, liked: previousLiked, likeCount: parseCount(comment.likeCount) } : row
+                ),
+              }
+            : item
+        )
+      );
+      setError(err instanceof Error ? err.message : '评论点赞失败');
     }
   }
 
@@ -573,7 +796,7 @@ export default function VideoScreen() {
       <ThemedView style={styles.root}>
         {loading ? (
           <View style={styles.center}>
-            <ActivityIndicator />
+            <AppActivityIndicator label="正在加载视频" />
           </View>
         ) : !items.length ? (
           <View style={styles.center}>
@@ -607,8 +830,9 @@ export default function VideoScreen() {
               const followed = Boolean(followedMap[item.account]);
               const paused = pausedIds.has(item.id);
               const playback = playbackMap[item.id];
-              const itemLiked = likedIds.has(`video-${item.id}`) || likedIds.has(item.id);
-              const itemCollected = collectIds.has(`video-${item.id}`);
+              const itemLiked = hasContentRef(likedIds, 'video', item.id);
+              const itemCollected = hasContentRef(collectIds, 'video', item.id);
+              const visibleCollects = item.collects || (itemCollected ? 1 : 0);
               const LikeIcon = itemLiked ? LikedIcon : UnlikedIcon;
               const CollectIcon = itemCollected ? CollectedIcon : UncollectedIcon;
               const progress =
@@ -619,19 +843,25 @@ export default function VideoScreen() {
                 <View style={[styles.page, { height: pageHeight }]}>
                   <Pressable style={styles.videoTapLayer} onPress={() => togglePlayback(item)}>
                     {item.videoUri ? (
-                      <Video
-                        ref={(ref) => {
+                      VideoComponent ? (
+                      <VideoComponent
+                        ref={(ref: ExpoAvVideoRef | null) => {
                           videoRefs.current[item.id] = ref;
                         }}
                         source={{ uri: item.videoUri }}
                         style={styles.video}
-                        resizeMode={ResizeMode.COVER}
+                        resizeMode={ResizeModeCover}
                         isLooping
                         shouldPlay={isActive && !paused}
                         isMuted={false}
                         progressUpdateIntervalMillis={250}
-                        onPlaybackStatusUpdate={(status) => updatePlaybackStatus(item.id, status)}
+                        onPlaybackStatusUpdate={(status: AVPlaybackStatus) => updatePlaybackStatus(item.id, status)}
                       />
+                      ) : (
+                        <View style={[styles.video, styles.videoFallback]}>
+                          <ThemedText style={styles.muted}>当前环境不支持该视频模块</ThemedText>
+                        </View>
+                      )
                     ) : item.coverUri ? (
                       <Image source={{ uri: item.coverUri }} style={styles.video} contentFit="cover" />
                     ) : (
@@ -649,12 +879,14 @@ export default function VideoScreen() {
                       <BackIcon width={24} height={24} color="#FFF" />
                     </Pressable>
                     <View style={styles.topRight}>
-                      <Pressable style={styles.topBtn}>
+                      <Pressable style={styles.topBtn} onPress={() => router.push({ pathname: '/search', params: { type: 'video' } })}>
                         <SearchIcon width={24} height={24} color="#FFF" />
                       </Pressable>
-                      <Pressable style={styles.topBtn}>
-                        <ShareIcon width={24} height={24} color="#FFF" />
-                      </Pressable>
+                      {item.account && user?.account === item.account ? (
+                        <Pressable style={styles.topBtn} onPress={openSettingsSheet}>
+                          <MoreIcon width={25} height={25} color="#FFF" />
+                        </Pressable>
+                      ) : null}
                     </View>
                   </View>
 
@@ -693,7 +925,7 @@ export default function VideoScreen() {
                       </Pressable>
                       <Pressable style={styles.actionBtn} onPress={() => void toggleCollect()}>
                         <CollectIcon width={22} height={22} color={itemCollected ? '#FF5B77' : '#FFF'} />
-                        <ThemedText style={[styles.actionText, itemCollected && isActive ? styles.activeAction : null]}>{item.collects ? item.collects : '收藏'}</ThemedText>
+                        <ThemedText style={[styles.actionText, itemCollected && isActive ? styles.activeAction : null]}>{visibleCollects || '收藏'}</ThemedText>
                       </Pressable>
                       <Pressable style={styles.actionBtn} onPress={openCommentPanel}>
                         <CommentIcon width={22} height={22} color="#FFF" />
@@ -738,6 +970,16 @@ export default function VideoScreen() {
                     <ThemedText style={styles.commentText}>{item.text}</ThemedText>
                     <ThemedText style={styles.commentDate}>{item.date || ''}</ThemedText>
                   </View>
+                  <Pressable style={styles.commentLikeBtn} onPress={() => void toggleVideoCommentLike(item)}>
+                    {item.liked ? (
+                      <LikedIcon width={18} height={18} color="#FF5B77" />
+                    ) : (
+                      <UnlikedIcon width={18} height={18} color="#9AA0AA" />
+                    )}
+                    {parseCount(item.likeCount) > 0 ? (
+                      <ThemedText style={[styles.commentLikeText, item.liked && styles.commentLikeTextActive]}>{item.likeCount}</ThemedText>
+                    ) : null}
+                  </Pressable>
                 </View>
               )}
             />
@@ -757,8 +999,88 @@ export default function VideoScreen() {
             </View>
           </View>
         </Modal>
+
+        <Modal visible={settingsVisible} transparent animationType="none" statusBarTranslucent onRequestClose={closeSettingsSheet}>
+          <View style={styles.settingsModalRoot}>
+            <Pressable style={styles.settingsBackdrop} onPress={closeSettingsSheet} />
+            <Animated.View style={[styles.settingsSheet, { transform: [{ translateY: settingsTranslateY }] }]}>
+              <View style={styles.settingsHeader}>
+                <View style={styles.settingsHeaderSide} />
+                <ThemedText style={styles.settingsTitle}>视频设置</ThemedText>
+                <Pressable hitSlop={12} style={styles.settingsCloseBtn} onPress={closeSettingsSheet}>
+                  <Feather name="x" size={28} color="#3C3C3F" />
+                </Pressable>
+              </View>
+              <View style={styles.settingsActions}>
+                <VideoSettingsAction icon="edit-3" label="编辑" onPress={closeSettingsSheet} />
+                <VideoSettingsAction icon="arrow-up-circle" label="置顶" onPress={closeSettingsSheet} />
+                <VideoSettingsAction icon={current?.hidden ? 'eye' : 'eye-off'} label={current?.hidden ? '取消隐藏' : '隐藏视频'} onPress={openHiddenPrompt} />
+                <VideoSettingsAction icon="trash-2" label="删除" danger onPress={openDeletePrompt} />
+              </View>
+            </Animated.View>
+          </View>
+        </Modal>
+
+        <Modal visible={hiddenPromptVisible} transparent animationType="fade" statusBarTranslucent onRequestClose={() => setHiddenPromptVisible(false)}>
+          <View style={styles.hiddenPromptRoot}>
+            <Pressable style={styles.hiddenPromptBackdrop} onPress={() => setHiddenPromptVisible(false)} />
+            <View style={styles.hiddenPromptBox}>
+              <ThemedText style={styles.hiddenPromptTitle}>{current?.hidden ? '取消隐藏视频' : '隐藏视频'}</ThemedText>
+              <ThemedText style={styles.hiddenPromptDesc}>
+                {current?.hidden ? '取消隐藏后，其他用户可以重新看到这个视频。' : '隐藏后，这个视频将不会展示给其他用户。'}
+              </ThemedText>
+              <View style={styles.hiddenPromptActions}>
+                <Pressable style={[styles.hiddenPromptBtn, styles.hiddenPromptCancel]} onPress={() => setHiddenPromptVisible(false)}>
+                  <ThemedText style={styles.hiddenPromptCancelText}>取消</ThemedText>
+                </Pressable>
+                <Pressable style={[styles.hiddenPromptBtn, styles.hiddenPromptConfirm]} onPress={() => void toggleHidden()} disabled={pendingHidden}>
+                  <ThemedText style={styles.hiddenPromptConfirmText}>{pendingHidden ? '处理中' : '确认'}</ThemedText>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal visible={deletePromptVisible} transparent animationType="fade" statusBarTranslucent onRequestClose={() => setDeletePromptVisible(false)}>
+          <View style={styles.hiddenPromptRoot}>
+            <Pressable style={styles.hiddenPromptBackdrop} onPress={() => setDeletePromptVisible(false)} />
+            <View style={styles.hiddenPromptBox}>
+              <ThemedText style={styles.hiddenPromptTitle}>删除视频</ThemedText>
+              <ThemedText style={styles.hiddenPromptDesc}>删除后将同时移除数据库记录、视频文件和封面文件，且无法恢复。</ThemedText>
+              <View style={styles.hiddenPromptActions}>
+                <Pressable style={[styles.hiddenPromptBtn, styles.hiddenPromptCancel]} onPress={() => setDeletePromptVisible(false)} disabled={pendingDelete}>
+                  <ThemedText style={styles.hiddenPromptCancelText}>取消</ThemedText>
+                </Pressable>
+                <Pressable style={[styles.hiddenPromptBtn, styles.hiddenPromptDanger]} onPress={() => void deleteVideo()} disabled={pendingDelete}>
+                  <ThemedText style={styles.hiddenPromptConfirmText}>{pendingDelete ? '删除中' : '删除'}</ThemedText>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </ThemedView>
     </SafeAreaView>
+  );
+}
+
+function VideoSettingsAction({
+  icon,
+  label,
+  danger,
+  onPress,
+}: {
+  icon: ComponentProps<typeof Feather>['name'];
+  label: string;
+  danger?: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable style={styles.settingsAction} onPress={onPress}>
+      <View style={styles.settingsActionIcon}>
+        <Feather name={icon} size={30} color={danger ? '#D93A3A' : '#7F7F83'} />
+      </View>
+      <ThemedText style={[styles.settingsActionText, danger && styles.settingsActionDanger]}>{label}</ThemedText>
+    </Pressable>
   );
 }
 
@@ -832,8 +1154,67 @@ const styles = StyleSheet.create({
   commentName: { color: '#5A6270', fontSize: 13 },
   commentText: { color: '#1F2329', fontSize: 14, lineHeight: 20 },
   commentDate: { color: '#9AA0AA', fontSize: 12 },
+  commentLikeBtn: { minWidth: 36, minHeight: 34, alignItems: 'center', justifyContent: 'center', gap: 2 },
+  commentLikeText: { color: '#9AA0AA', fontSize: 11, fontWeight: '600' },
+  commentLikeTextActive: { color: '#FF5B77' },
   inputRow: { flexDirection: 'row', alignItems: 'center', gap: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#ECECEC', paddingTop: 10 },
   input: { flex: 1, height: 40, borderRadius: 20, backgroundColor: '#F5F6F8', paddingHorizontal: 12, fontSize: 14 },
   sendBtn: { width: 64, height: 36, borderRadius: 18, backgroundColor: '#FF4F72', alignItems: 'center', justifyContent: 'center' },
   sendText: { color: '#FFF', fontSize: 13, fontWeight: '700' },
+  settingsModalRoot: { flex: 1, justifyContent: 'flex-end' },
+  settingsBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.56)' },
+  settingsSheet: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: 34,
+    backgroundColor: '#FFFFFF',
+  },
+  settingsHeader: {
+    height: 62,
+    paddingHorizontal: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  settingsHeaderSide: { width: 42 },
+  settingsTitle: { fontSize: 21, color: '#303034', fontWeight: '700' },
+  settingsCloseBtn: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center' },
+  settingsActions: {
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  settingsAction: { flex: 1, alignItems: 'center', gap: 10, minWidth: 0 },
+  settingsActionIcon: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F7F7F8',
+  },
+  settingsActionText: { textAlign: 'center', fontSize: 14, color: '#5C5C61', fontWeight: '700' },
+  settingsActionDanger: { color: '#D93A3A' },
+  hiddenPromptRoot: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 34 },
+  hiddenPromptBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.58)' },
+  hiddenPromptBox: {
+    width: '100%',
+    maxWidth: 340,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 22,
+    paddingTop: 22,
+    paddingBottom: 18,
+  },
+  hiddenPromptTitle: { color: '#1F2329', fontSize: 18, fontWeight: '700', textAlign: 'center' },
+  hiddenPromptDesc: { marginTop: 10, color: '#606774', fontSize: 14, lineHeight: 20, textAlign: 'center' },
+  hiddenPromptActions: { marginTop: 22, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  hiddenPromptBtn: { flex: 1, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
+  hiddenPromptCancel: { backgroundColor: '#F1F2F5' },
+  hiddenPromptConfirm: { backgroundColor: '#FF2442' },
+  hiddenPromptDanger: { backgroundColor: '#D93A3A' },
+  hiddenPromptCancelText: { color: '#4E5561', fontSize: 15, fontWeight: '700' },
+  hiddenPromptConfirmText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
 });

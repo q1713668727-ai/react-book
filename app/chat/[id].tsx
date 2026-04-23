@@ -1,9 +1,12 @@
 import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type ComponentType, type Ref, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  Animated,
   FlatList,
   Keyboard,
+  Platform,
   Pressable,
   StyleSheet,
   TextInput,
@@ -17,7 +20,7 @@ import { resolveMediaUrl } from '@/constants/api';
 import { useAuth } from '@/contexts/auth-context';
 import { messageReadKey, writeChatReadMarker } from '@/lib/chat-read-markers';
 import { connectChatSocket } from '@/lib/chat-socket';
-import { createConversation, fetchConversation, fetchFollowStatus, toggleFollow, type ConversationItem } from '@/lib/redbook-api';
+import { createConversation, fetchConversation, fetchFollowStatus, fetchUserInfo, toggleFollow, type ConversationItem } from '@/lib/redbook-api';
 import EmojiIcon from '@/public/icon/biaoqing.svg';
 import MoreIcon from '@/public/icon/gengduo.svg';
 
@@ -27,7 +30,7 @@ type ChatMessage = {
   date: string;
   type: 'text' | 'emoji';
   text?: string;
-  emoji?: keyof typeof emojiAssets;
+  emoji?: string;
 };
 
 type ChatDisplayItem =
@@ -44,55 +47,61 @@ type ChatDisplayItem =
 
 type HistoryMessage = NonNullable<ConversationItem['historyMessage']>[number];
 
-const emojiAssets = {
-  '0.gif': require('../../public/emoji/0.gif'),
-  '1.gif': require('../../public/emoji/1.gif'),
-  '2.gif': require('../../public/emoji/2.gif'),
-  '3.gif': require('../../public/emoji/3.gif'),
-  '4.gif': require('../../public/emoji/4.gif'),
-  '5.gif': require('../../public/emoji/5.gif'),
-  '6.gif': require('../../public/emoji/6.gif'),
-  '7.gif': require('../../public/emoji/7.gif'),
-  '8.gif': require('../../public/emoji/8.gif'),
-  '9.gif': require('../../public/emoji/9.gif'),
-  '10.gif': require('../../public/emoji/10.gif'),
-  '11.gif': require('../../public/emoji/11.gif'),
-  '12.gif': require('../../public/emoji/12.gif'),
-  '13.gif': require('../../public/emoji/13.gif'),
-  '14.gif': require('../../public/emoji/14.gif'),
-  '15.gif': require('../../public/emoji/15.gif'),
-  '16.gif': require('../../public/emoji/16.gif'),
-  '17.gif': require('../../public/emoji/17.gif'),
-  '18.gif': require('../../public/emoji/18.gif'),
-  '19.gif': require('../../public/emoji/19.gif'),
-  '20.gif': require('../../public/emoji/20.gif'),
-  '21.gif': require('../../public/emoji/21.gif'),
-  '22.gif': require('../../public/emoji/22.gif'),
-  '23.gif': require('../../public/emoji/23.gif'),
-  '24.gif': require('../../public/emoji/24.gif'),
-  '25.gif': require('../../public/emoji/25.gif'),
-  '26.gif': require('../../public/emoji/26.gif'),
-  '27.gif': require('../../public/emoji/27.gif'),
-  '28.gif': require('../../public/emoji/28.gif'),
-  '29.gif': require('../../public/emoji/29.gif'),
-  '30.gif': require('../../public/emoji/30.gif'),
-  '31.gif': require('../../public/emoji/31.gif'),
-  '32.gif': require('../../public/emoji/32.gif'),
-  '33.gif': require('../../public/emoji/33.gif'),
-  '34.gif': require('../../public/emoji/34.gif'),
-  '35.gif': require('../../public/emoji/35.gif'),
-} as const;
-
-const emojiList = Object.keys(emojiAssets) as (keyof typeof emojiAssets)[];
+const emojiList = ['😀', '😂', '😍', '🥳', '😎', '🤔', '😭', '😡', '👍', '👏', '🙏', '🔥', '🎉', '💯', '❤️', '✨'];
 const weekdayLabels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const tenMinutes = 10 * 60 * 1000;
+const fallbackEmoji = '🙂';
+const HIDDEN_CONVERSATIONS_KEY_PREFIX = '@chat_hidden_conversations_v1:';
+const CHAT_SCROLL_BOTTOM_GAP = 28;
 
-function normalizeEmojiKey(value: unknown): keyof typeof emojiAssets | undefined {
+type EmojiBurstHandle = {
+  burst: (options?: { count?: number; intensity?: number; emojiIndex?: number }) => void;
+  clear?: () => void;
+};
+
+let EmojiBurstView: ComponentType<{
+  ref?: Ref<EmojiBurstHandle>;
+  emojis?: string[];
+  particlesPerBurst?: number;
+  maxParticles?: number;
+  emojiSize?: number;
+  fadeOutAfter?: number;
+  lifetime?: number;
+  style?: object;
+}> | null = null;
+
+if (Platform.OS !== 'web') {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const burstModule = require('react-native-emoji-burst') as {
+      EmojiBurst?: ComponentType<{
+        ref?: Ref<EmojiBurstHandle>;
+        emojis?: string[];
+        particlesPerBurst?: number;
+        maxParticles?: number;
+        emojiSize?: number;
+        fadeOutAfter?: number;
+        lifetime?: number;
+        style?: object;
+      }>;
+    };
+    EmojiBurstView = burstModule?.EmojiBurst || null;
+  } catch {
+    EmojiBurstView = null;
+  }
+}
+
+function normalizeEmojiChar(value: unknown, legacyUrl?: unknown) {
   const raw = String(value || '').trim();
-  if (!raw) return undefined;
-  const file = raw.includes('/') ? raw.split('/').pop() || '' : raw;
-  if (Object.prototype.hasOwnProperty.call(emojiAssets, file)) return file as keyof typeof emojiAssets;
-  return undefined;
+  if (raw) return raw;
+  const legacy = String(legacyUrl || '').trim();
+  if (!legacy) return fallbackEmoji;
+  const file = legacy.includes('/') ? legacy.split('/').pop() || '' : legacy;
+  const match = file.match(/^(\d+)\.gif$/i);
+  if (!match) return fallbackEmoji;
+  const index = Number(match[1]);
+  if (!Number.isFinite(index)) return fallbackEmoji;
+  return emojiList[index % emojiList.length] || fallbackEmoji;
 }
 
 function toChatMessages(history: ConversationItem['historyMessage']) {
@@ -105,7 +114,7 @@ function toChatMessages(history: ConversationItem['historyMessage']) {
       date: String(date || ''),
       type: textType,
       text: textType === 'text' ? String(item?.text?.message || '') : undefined,
-      emoji: textType === 'emoji' ? normalizeEmojiKey(item?.text?.url) : undefined,
+      emoji: textType === 'emoji' ? normalizeEmojiChar(item?.text?.message, item?.text?.url) : undefined,
     } as ChatMessage;
   });
 }
@@ -210,26 +219,92 @@ export default function ChatDetailScreen() {
   const params = useLocalSearchParams<{ id: string; title?: string; url?: string }>();
   const { user } = useAuth();
   const socketRef = useRef<WebSocket | null>(null);
+  const burstRef = useRef<EmojiBurstHandle | null>(null);
   const readCountRef = useRef(0);
   const listRef = useRef<FlatList<ChatDisplayItem> | null>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rafRef = useRef<number | null>(null);
   const chatId = String(params.id || '');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [text, setText] = useState('');
   const [showEmoji, setShowEmoji] = useState(false);
+  const [emojiMounted, setEmojiMounted] = useState(false);
   const [ready, setReady] = useState(false);
   const [sending, setSending] = useState(false);
-  const [listHeight, setListHeight] = useState(0);
-  const [contentHeight, setContentHeight] = useState(0);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [composerHeight, setComposerHeight] = useState(80);
   const [followed, setFollowed] = useState(false);
   const [followPending, setFollowPending] = useState(false);
   const [timeTick, setTimeTick] = useState(0);
+  const [peerName, setPeerName] = useState(String(params.title || chatId || '聊天'));
+  const [peerAvatarPath, setPeerAvatarPath] = useState(String(params.url || ''));
+  const emojiAnim = useRef(new Animated.Value(0)).current;
 
-  const targetName = String(params.title || chatId || '聊天');
-  const targetAvatar = avatarUri(String(params.url || ''));
+  const targetName = peerName;
+  const targetAvatar = avatarUri(peerAvatarPath);
   const myAvatar = avatarUri(String(user?.url || ''));
+
+  useEffect(() => {
+    if (!user?.account || !chatId) return;
+    const key = `${HIDDEN_CONVERSATIONS_KEY_PREFIX}${user.account}`;
+    AsyncStorage.getItem(key)
+      .then((raw) => {
+        if (!raw) return;
+        let parsed: unknown = [];
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          parsed = [];
+        }
+        const current = Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : [];
+        if (!current.includes(chatId)) return;
+        const next = current.filter((id) => id !== chatId);
+        return AsyncStorage.setItem(key, JSON.stringify(next));
+      })
+      .catch(() => undefined);
+  }, [user?.account, chatId]);
+
+  useEffect(() => {
+    setPeerName(String(params.title || chatId || '聊天'));
+  }, [params.title, chatId]);
+
+  useEffect(() => {
+    setPeerAvatarPath(String(params.url || ''));
+  }, [params.url, chatId]);
+
+  const triggerEmojiBurst = useCallback((emoji: string) => {
+    if (!emoji || !EmojiBurstView) return;
+    const emojiIndex = emojiList.indexOf(emoji);
+    burstRef.current?.burst({
+      count: 14,
+      intensity: 1.12,
+      ...(emojiIndex >= 0 ? { emojiIndex } : {}),
+    });
+  }, []);
+
+  const openEmojiPanel = useCallback(() => {
+    Keyboard.dismiss();
+    setEmojiMounted(true);
+    setShowEmoji(true);
+    Animated.spring(emojiAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 6,
+    }).start();
+  }, [emojiAnim]);
+
+  const closeEmojiPanel = useCallback(() => {
+    setShowEmoji(false);
+    Animated.timing(emojiAnim, {
+      toValue: 0,
+      duration: 180,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) setEmojiMounted(false);
+    });
+  }, [emojiAnim]);
 
   useEffect(() => {
     readCountRef.current = 0;
@@ -239,6 +314,21 @@ export default function ChatDetailScreen() {
     if (!user?.account || !chatId || chatId === user.account) return false;
 
     const response = await fetchConversation({ account: user.account, target: chatId });
+    const latestTitle = String(response.result?.title || '').trim();
+    const latestAvatar = String(response.result?.url || response.result?.avatar || '').trim();
+    if (latestTitle) setPeerName(latestTitle);
+    if (latestAvatar) setPeerAvatarPath(latestAvatar);
+
+    fetchUserInfo(chatId)
+      .then((profile) => {
+        if (!profile) return;
+        const profileName = String(profile.name || '').trim();
+        const profileAvatar = String(profile.url || profile.avatar || '').trim();
+        if (profileName) setPeerName(profileName);
+        if (profileAvatar) setPeerAvatarPath(profileAvatar);
+      })
+      .catch(() => undefined);
+
     const history = toChatMessages(response.result?.historyMessage);
     setMessages(history);
     const latest = response.result?.historyMessage?.[response.result.historyMessage.length - 1];
@@ -250,8 +340,8 @@ export default function ChatDetailScreen() {
 
     const target = {
       id: chatId,
-      avatar: String(params.url || ''),
-      title: targetName,
+      avatar: latestAvatar || String(params.url || ''),
+      title: latestTitle || targetName,
       read: 0,
       historyMessage: [],
     };
@@ -304,8 +394,9 @@ export default function ChatDetailScreen() {
             date: receivedAt,
             type: data.text?.type === 'emoji' ? 'emoji' : 'text',
             text: data.text?.type === 'text' ? String(data.text.message || '') : undefined,
-            emoji: data.text?.type === 'emoji' ? normalizeEmojiKey(data.text.url) : undefined,
+            emoji: data.text?.type === 'emoji' ? normalizeEmojiChar(data.text?.message, data.text?.url) : undefined,
           };
+          if (next.type === 'emoji' && next.emoji) triggerEmojiBurst(next.emoji);
           setMessages((prev) => [...prev, next]);
         });
         socketRef.current = ws;
@@ -320,7 +411,7 @@ export default function ChatDetailScreen() {
       socketRef.current?.close();
       socketRef.current = null;
     };
-  }, [user?.account, chatId, ensureConversation]);
+  }, [user?.account, chatId, ensureConversation, triggerEmojiBurst]);
 
   useEffect(() => {
     if (!user?.account || !chatId || chatId === user.account) {
@@ -355,22 +446,32 @@ export default function ChatDetailScreen() {
   }, []);
 
   const canSend = useMemo(() => text.trim().length > 0 && !sending && ready, [text, sending, ready]);
-  const shouldInvertMessages = listHeight > 0 && contentHeight > listHeight + 1;
-  const displayMessages = useMemo(() => {
-    const next = toDisplayMessages(messages);
-    return shouldInvertMessages ? next.reverse() : next;
-  }, [messages, shouldInvertMessages, timeTick]);
+  const displayMessages = useMemo(() => toDisplayMessages(messages), [messages, timeTick]);
   const messagesComposerPadding = useMemo(
-    () =>
-      shouldInvertMessages
-        ? {
-            paddingTop: composerHeight + keyboardHeight + 16,
-          }
-        : {
-            paddingBottom: composerHeight + keyboardHeight + 16,
-          },
-    [composerHeight, keyboardHeight, shouldInvertMessages]
+    () => ({
+      paddingBottom: composerHeight + keyboardHeight + CHAT_SCROLL_BOTTOM_GAP,
+    }),
+    [composerHeight, keyboardHeight]
   );
+
+  const scrollToBottom = useCallback((animated = true) => {
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (settleScrollTimerRef.current) {
+      clearTimeout(settleScrollTimerRef.current);
+      settleScrollTimerRef.current = null;
+    }
+    rafRef.current = requestAnimationFrame(() => {
+      listRef.current?.scrollToEnd({ animated });
+      rafRef.current = null;
+    });
+    settleScrollTimerRef.current = setTimeout(() => {
+      listRef.current?.scrollToEnd({ animated: true });
+      settleScrollTimerRef.current = null;
+    }, 90);
+  }, []);
 
   useEffect(() => {
     if (!messages.length) return;
@@ -378,11 +479,7 @@ export default function ChatDetailScreen() {
 
     scrollTimerRef.current = setTimeout(() => {
       scrollTimerRef.current = null;
-      if (shouldInvertMessages) {
-        listRef.current?.scrollToOffset({ offset: 0, animated: true });
-      } else {
-        listRef.current?.scrollToEnd({ animated: true });
-      }
+      scrollToBottom(true);
     }, 80);
 
     return () => {
@@ -390,8 +487,16 @@ export default function ChatDetailScreen() {
         clearTimeout(scrollTimerRef.current);
         scrollTimerRef.current = null;
       }
+      if (settleScrollTimerRef.current) {
+        clearTimeout(settleScrollTimerRef.current);
+        settleScrollTimerRef.current = null;
+      }
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
     };
-  }, [composerHeight, keyboardHeight, messages.length, shouldInvertMessages]);
+  }, [composerHeight, keyboardHeight, messages.length, scrollToBottom]);
 
   useEffect(() => {
     if (!messages.length) return;
@@ -414,12 +519,12 @@ export default function ChatDetailScreen() {
           text:
             type === 'text'
               ? { message: value, type: 'text' }
-              : { url: value, type: 'emoji' },
+              : { message: value, type: 'emoji' },
         },
       };
 
       socketRef.current?.send(JSON.stringify(payload));
-      const emoji = type === 'emoji' ? normalizeEmojiKey(value) : undefined;
+      const emoji = type === 'emoji' ? normalizeEmojiChar(value) : undefined;
       setMessages((prev) => [
         ...prev,
         {
@@ -431,6 +536,7 @@ export default function ChatDetailScreen() {
           emoji,
         },
       ]);
+      if (type === 'emoji' && emoji) triggerEmojiBurst(emoji);
       if (type === 'text') setText('');
     } finally {
       setSending(false);
@@ -440,7 +546,7 @@ export default function ChatDetailScreen() {
   function goTargetProfile() {
     router.push({
       pathname: '/user/[account]',
-      params: { account: chatId, name: targetName, avatar: String(params.url || '') },
+      params: { account: chatId, name: targetName, avatar: String(peerAvatarPath || params.url || '') },
     });
   }
 
@@ -501,16 +607,30 @@ export default function ChatDetailScreen() {
         }}
       />
       <ThemedView style={styles.root}>
+        {EmojiBurstView ? (
+          <EmojiBurstView
+            ref={burstRef}
+            emojis={emojiList}
+            particlesPerBurst={14}
+            maxParticles={220}
+            emojiSize={30}
+            lifetime={2.2}
+            fadeOutAfter={1.1}
+            style={styles.emojiBurstLayer}
+          />
+        ) : null}
+        {showEmoji ? (
+          <Pressable style={[styles.emojiBackdrop, { bottom: keyboardHeight + composerHeight }]} onPress={closeEmojiPanel} />
+        ) : null}
         <FlatList
           ref={listRef}
           style={styles.messages}
           contentContainerStyle={[styles.messagesContent, messagesComposerPadding]}
           data={displayMessages}
-          inverted={shouldInvertMessages}
           keyExtractor={(item) => item.id}
           keyboardShouldPersistTaps="handled"
-          onLayout={(event) => setListHeight(event.nativeEvent.layout.height)}
-          onContentSizeChange={(_, height) => setContentHeight(height)}
+          onLayout={() => scrollToBottom(false)}
+          onContentSizeChange={() => scrollToBottom(true)}
           renderItem={({ item }) => {
             if (item.kind === 'time') {
               return (
@@ -531,7 +651,7 @@ export default function ChatDetailScreen() {
 
                 <View style={[styles.bubble, message.mine ? styles.bubbleMine : styles.bubbleYou]}>
                   {message.type === 'emoji' ? (
-                    message.emoji ? <Image source={emojiAssets[message.emoji]} style={styles.emojiImage} contentFit="contain" /> : <ThemedText style={styles.bubbleYouText}>[表情]</ThemedText>
+                    <ThemedText style={styles.emojiText}>{message.emoji || fallbackEmoji}</ThemedText>
                   ) : (
                     <ThemedText style={message.mine ? styles.bubbleMineText : styles.bubbleYouText}>{message.text}</ThemedText>
                   )}
@@ -547,27 +667,52 @@ export default function ChatDetailScreen() {
           }}
         />
 
-        <View style={[styles.composer, { bottom: keyboardHeight }]} onLayout={(event) => setComposerHeight(event.nativeEvent.layout.height)}>
-          {showEmoji ? (
-            <View style={styles.emojiPanel}>
-              {emojiList.map((emojiKey) => (
-                <Pressable key={emojiKey} style={styles.emojiBtn} onPress={() => void sendMessage('emoji', emojiKey)}>
-                  <Image source={emojiAssets[emojiKey]} style={styles.emojiBtnImage} contentFit="contain" />
+        <View
+          style={[styles.composer, { bottom: keyboardHeight }]}
+          onLayout={(event) => {
+            setComposerHeight(event.nativeEvent.layout.height);
+            scrollToBottom(false);
+          }}>
+          {emojiMounted ? (
+            <Animated.View
+              style={[
+                styles.emojiPanel,
+                {
+                  opacity: emojiAnim,
+                  transform: [
+                    {
+                      translateY: emojiAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [20, 0],
+                      }),
+                    },
+                    {
+                      scale: emojiAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0.98, 1],
+                      }),
+                    },
+                  ],
+                },
+              ]}>
+              {emojiList.map((emojiChar) => (
+                <Pressable
+                  key={emojiChar}
+                  style={styles.emojiBtn}
+                  onPress={() => {
+                    closeEmojiPanel();
+                    void sendMessage('emoji', emojiChar);
+                  }}>
+                  <ThemedText style={styles.emojiBtnText}>{emojiChar}</ThemedText>
                 </Pressable>
               ))}
-            </View>
+            </Animated.View>
           ) : null}
 
           <View style={styles.inputBar}>
             <Pressable
               style={styles.emojiToggle}
-              onPress={() => {
-                setShowEmoji((prev) => {
-                  const next = !prev;
-                  if (next) Keyboard.dismiss();
-                  return next;
-                });
-              }}>
+              onPress={() => (showEmoji ? closeEmojiPanel() : openEmojiPanel())}>
               <EmojiIcon width={26} height={26} color={showEmoji ? '#FF2442' : '#5B6475'} fill={showEmoji ? '#FF2442' : '#5B6475'} />
             </Pressable>
             <TextInput
@@ -576,7 +721,7 @@ export default function ChatDetailScreen() {
               onChangeText={setText}
               placeholder={ready ? '输入消息' : '连接中...'}
               editable={ready && !sending}
-              onFocus={() => setShowEmoji(false)}
+              onFocus={closeEmojiPanel}
             />
             <Pressable style={[styles.sendBtn, !canSend && styles.sendBtnDisabled]} disabled={!canSend} onPress={() => void sendMessage('text', text.trim())}>
               <ThemedText style={styles.sendText}>{sending ? '发送中' : '发送'}</ThemedText>
@@ -602,6 +747,11 @@ const styles = StyleSheet.create({
   headerFollowActiveText: { color: '#FFF' },
   headerFollowedText: { color: '#8E8E93' },
   headerMoreBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
+  emojiBurstLayer: { ...StyleSheet.absoluteFillObject },
+  emojiBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 5,
+  },
   messages: { flex: 1 },
   messagesContent: { padding: 12, gap: 12 },
   timeRow: { alignItems: 'center', justifyContent: 'center', paddingVertical: 2 },
@@ -616,11 +766,12 @@ const styles = StyleSheet.create({
   bubbleYou: { backgroundColor: '#D9D9D9' },
   bubbleMineText: { color: '#0B2A12', fontSize: 16, lineHeight: 22 },
   bubbleYouText: { color: '#111', fontSize: 16, lineHeight: 22 },
-  emojiImage: { width: 34, height: 34 },
+  emojiText: { fontSize: 34, lineHeight: 38 },
   composer: {
     position: 'absolute',
     left: 0,
     right: 0,
+    zIndex: 6,
   },
   inputBar: {
     flexDirection: 'row',
@@ -655,5 +806,5 @@ const styles = StyleSheet.create({
     backgroundColor: '#F5F5F5',
   },
   emojiBtn: { width: '12.5%', alignItems: 'center', justifyContent: 'center', paddingVertical: 6 },
-  emojiBtnImage: { width: 34, height: 34 },
+  emojiBtnText: { fontSize: 30, lineHeight: 34 },
 });

@@ -2,14 +2,16 @@ import { Image } from 'expo-image';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AppActivityIndicator } from '@/components/app-loading';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
 import { useAuth } from '@/contexts/auth-context';
 import { feedItems as fallbackFeedItems } from '@/data/mock-xhs';
+import { hasContentRef, setContentRef } from '@/lib/content-refs';
 import { postJson, postPublicJson } from '@/lib/post-json';
 import LikedIcon from '@/public/icon/xihuan.svg';
 import UnlikedIcon from '@/public/icon/xihuan_1.svg';
@@ -35,6 +37,7 @@ type HomeNoteDto = {
   file?: string;
   contentType?: string;
   feedKey?: string;
+  hidden?: boolean | number | string;
 };
 
 type FallbackFeedDto = (typeof fallbackFeedItems)[number];
@@ -57,9 +60,22 @@ type UserInfoResponse = {
   likes?: string;
 };
 
+type FollowListItem = {
+  account?: string;
+};
+
+type FollowListResponse = {
+  data?: FollowListItem[];
+};
+
+type ProfileNoteResponse = {
+  data?: HomeNoteDto[];
+};
+
 const GAP = 8;
 const H_PADDING = 10;
-const tabs = ['关注', '发现', '附近'];
+const tabs = ['关注', '发现', '附近'] as const;
+type HomeTab = (typeof tabs)[number];
 
 function parseIdList(value: unknown): string[] {
   return String(value ?? '')
@@ -131,7 +147,7 @@ function toHomeFeedItem(note: HomeNoteDto, likedIds: Set<string>): HomeFeedItem 
       : note.account && firstImage
         ? resolveMediaUrl(`note-image/${note.account}/${firstImage}`)
         : undefined;
-  const liked = likedIds.has(itemId) || likedIds.has(rawId);
+  const liked = hasContentRef(likedIds, contentType, rawId);
 
   return {
     id: itemId,
@@ -159,7 +175,7 @@ function toFallbackFeedItem(item: FallbackFeedDto, likedIds: Set<string>): HomeF
     brief: '游客模式演示内容',
     imageUri: item.imageUri,
     likes: item.likes,
-    liked: likedIds.has(itemId) || likedIds.has(item.id),
+    liked: hasContentRef(likedIds, 'note', item.id),
     authorName: '演示用户',
   };
 }
@@ -178,6 +194,7 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [videoThumbs, setVideoThumbs] = useState<Record<string, string>>({});
+  const [activeTab, setActiveTab] = useState<HomeTab>('发现');
   const thumbPendingRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -208,27 +225,57 @@ export default function HomeScreen() {
     else setLoading(true);
 
     try {
-      const { result: feedResult } = await postPublicJson<HomeNoteDto[]>('/index', { init: true });
       const userInfoRes = user?.account
         ? await postJson<UserInfoResponse>('/user/getUserInfo', { account: user.account }).catch(() => ({ result: { likes: '' } as UserInfoResponse }))
         : { result: { likes: '' } as UserInfoResponse };
-
       const nextLikedIds = new Set(parseIdList(userInfoRes.result?.likes));
-      const serverItems = Array.isArray(feedResult) ? feedResult.map((item) => toHomeFeedItem(item, nextLikedIds)) : [];
+
+      let feedResult: HomeNoteDto[] = [];
+      let emptyMessage = '暂时没有加载到内容，刷新试试';
+
+      if (activeTab === '关注') {
+        if (!user?.account) {
+          setLikedIds(nextLikedIds);
+          setItems([]);
+          setError('登录后查看关注用户的作品');
+          return;
+        }
+
+        const followRes = await postJson<FollowListResponse>('/user/followList', { type: 'follow' });
+        const accounts = Array.from(
+          new Set((followRes.result?.data || []).map((item) => String(item.account || '').trim()).filter(Boolean))
+        );
+        emptyMessage = accounts.length ? '关注的用户还没有发布作品' : '还没有关注任何用户';
+
+        const postResults = await Promise.all(
+          accounts.map((account) =>
+            postJson<ProfileNoteResponse>('/user/myNote', { account }).catch(() => ({ result: { data: [] } as ProfileNoteResponse }))
+          )
+        );
+        feedResult = postResults.flatMap((res) => (Array.isArray(res.result?.data) ? res.result.data : []));
+      } else {
+        const { result } = await postPublicJson<HomeNoteDto[]>('/index', { init: true, scope: activeTab === '附近' ? 'nearby' : 'discover' });
+        feedResult = Array.isArray(result) ? result : [];
+      }
+
+      const serverItems = feedResult
+        .filter((item) => !Number(item.hidden || 0))
+        .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))
+        .map((item) => toHomeFeedItem(item, nextLikedIds));
       setLikedIds(nextLikedIds);
-      setItems(serverItems.length ? serverItems : buildFallbackFeed(nextLikedIds));
-      setError(null);
+      setItems(serverItems.length ? serverItems : activeTab === '发现' ? buildFallbackFeed(nextLikedIds) : []);
+      setError(serverItems.length || activeTab === '发现' ? null : emptyMessage);
     } catch (err) {
       const message = err instanceof Error ? err.message : '';
       const nextLikedIds = new Set<string>();
       setLikedIds(nextLikedIds);
-      setItems(buildFallbackFeed(nextLikedIds));
+      setItems(activeTab === '发现' ? buildFallbackFeed(nextLikedIds) : []);
       setError(/登录已失效|请先登录|登录过期|重新登录/.test(message) ? null : message || null);
     } finally {
       if (isRefresh) setRefreshing(false);
       else setLoading(false);
     }
-  }, [user?.account]);
+  }, [activeTab, user?.account]);
 
   useEffect(() => {
     void loadHomeFeed();
@@ -248,10 +295,7 @@ export default function HomeScreen() {
     const previousLikedIds = new Set(likedIds);
     const nextLiked = !currentItem.liked;
     const nextLikes = Math.max(0, currentItem.likes + (nextLiked ? 1 : -1));
-    const nextLikedIds = new Set(previousLikedIds);
-
-    if (nextLiked) nextLikedIds.add(itemId);
-    else nextLikedIds.delete(itemId);
+    const nextLikedIds = setContentRef(previousLikedIds, currentItem.contentType, currentItem.rawId, nextLiked);
 
     setPendingIds((prev) => [...prev, itemId]);
     setLikedIds(nextLikedIds);
@@ -276,7 +320,7 @@ export default function HomeScreen() {
 
   const listEmpty = loading ? (
     <View style={styles.stateBlock}>
-      <ActivityIndicator />
+      <AppActivityIndicator label="正在加载" />
     </View>
   ) : (
     <View style={styles.stateBlock}>
@@ -295,10 +339,10 @@ export default function HomeScreen() {
             <ScanIcon width={24} height={24} color="#2C2C2C" />
           </Pressable>
           <View style={styles.tabsNav}>
-            {tabs.map((tab, idx) => {
-              const active = idx === 1;
+            {tabs.map((tab) => {
+              const active = tab === activeTab;
               return (
-                <Pressable key={tab} style={styles.tabItem}>
+                <Pressable key={tab} style={styles.tabItem} onPress={() => setActiveTab(tab)}>
                   <ThemedText style={[styles.tabText, active && styles.tabTextActive]}>{tab}</ThemedText>
                   <View style={[styles.tabLine, active && styles.tabLineActive]} />
                 </Pressable>

@@ -1,7 +1,6 @@
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -11,6 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AppActivityIndicator } from '@/components/app-loading';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/auth-context';
@@ -116,7 +116,7 @@ export default function ChangePasswordScreen() {
 
             <Pressable style={[styles.primaryBtn, { opacity: loading ? 0.6 : 1 }]} disabled={loading} onPress={() => void onSubmit()}>
               {loading ? (
-                <ActivityIndicator color="#fff" />
+                <AppActivityIndicator compact color="#FFFFFF" />
               ) : (
                 <ThemedText style={styles.primaryBtnText} lightColor="#fff" darkColor="#fff">
                   保存新密码

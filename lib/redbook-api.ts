@@ -3,6 +3,7 @@ import { getJson, postJson } from '@/lib/post-json';
 export type ConversationItem = {
   id: string;
   title?: string;
+  avatar?: string;
   url?: string;
   read?: number;
   date?: string | number;
@@ -81,6 +82,14 @@ export type UserPostItem = {
 export async function fetchConversationList(account: string) {
   const { result } = await getJson<ConversationItem[]>('/websocket/init', { account });
   return Array.isArray(result) ? result : [];
+}
+
+export async function clearConversationMessages(account: string, targetUser: string) {
+  return postJson('/clearBadge', { account, targetUser, clearHistory: true });
+}
+
+export async function deleteConversationMessages(account: string, targetUser: string) {
+  return postJson('/deleteUser', { account, targetUser });
 }
 
 export async function fetchMoreMessage(params: { account: string; target: string; length: number }) {

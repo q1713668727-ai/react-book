@@ -1,9 +1,10 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { FlatList, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AppActivityIndicator } from '@/components/app-loading';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { fetchAllUser } from '@/lib/redbook-api';
@@ -219,7 +220,7 @@ export default function SearchScreen() {
             keyExtractor={(item) => item.id}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={styles.suggestionList}
-            ListFooterComponent={loading ? <ActivityIndicator style={styles.loading} /> : null}
+            ListFooterComponent={loading ? <AppActivityIndicator compact style={styles.loading} /> : null}
             ListEmptyComponent={!loading ? (
               <View style={styles.emptySuggestions}>
                 <ThemedText style={styles.clearText}>没有找到相关搜索</ThemedText>

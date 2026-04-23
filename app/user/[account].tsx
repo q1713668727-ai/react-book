@@ -2,9 +2,10 @@ import { Image } from 'expo-image';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AppActivityIndicator } from '@/components/app-loading';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
@@ -316,7 +317,7 @@ export default function UserProfileScreen() {
       <ThemedView style={styles.root}>
         {loading ? (
           <View style={styles.loading}>
-            <ActivityIndicator />
+            <AppActivityIndicator label="正在加载主页" />
           </View>
         ) : (
           <FlatList

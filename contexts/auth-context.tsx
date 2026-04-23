@@ -1,7 +1,7 @@
 import { router } from 'expo-router';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { Alert } from 'react-native';
 
+import { useFeedback } from '@/components/app-feedback';
 import { subscribeAuthSessionExpired } from '@/lib/auth-session-events';
 import { postJson } from '@/lib/post-json';
 import { AUTH_TOKEN_EXPIRE_KEY, AUTH_TOKEN_KEY, AUTH_USER_KEY, getString, hydrateStorage, removeString, setString } from '@/lib/storage';
@@ -13,6 +13,8 @@ type AuthContextValue = {
   signIn: (account: string, password: string) => Promise<void>;
   signUp: (params: { name: string; account: string; password: string; email: string }) => Promise<void>;
   signOut: () => Promise<void>;
+  updateUser: (patch: Partial<AuthUser>) => Promise<void>;
+  refreshUser: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -34,6 +36,7 @@ async function persistUser(user: AuthUser | null) {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const feedback = useFeedback();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isReady, setIsReady] = useState(false);
   const sessionAlertVisibleRef = React.useRef(false);
@@ -102,30 +105,60 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await persistUser(null);
   }, []);
 
+  const updateUser = useCallback(
+    async (patch: Partial<AuthUser>) => {
+      if (!user) return;
+      const keys = Object.keys(patch || {});
+      if (!keys.length) return;
+      const changed = keys.some((key) => !Object.is((user as any)[key], (patch as any)[key]));
+      if (!changed) return;
+
+      const nextUser: AuthUser = { ...user, ...patch };
+      setUser(nextUser);
+      await persistUser(nextUser);
+    },
+    [user],
+  );
+
+  const refreshUser = useCallback(async () => {
+    if (!user?.account) return;
+    const { result } = await postJson<AuthUser>('/user/getUserInfo', { account: user.account });
+    if (!result || typeof result !== 'object') return;
+    const nextUser: AuthUser = {
+      ...user,
+      ...result,
+      token: user.token,
+      tokenExpireAt: user.tokenExpireAt,
+    };
+    const changed = Object.keys(nextUser).some((key) => !Object.is((user as any)[key], (nextUser as any)[key]));
+    if (!changed) return;
+    setUser(nextUser);
+    await persistUser(nextUser);
+  }, [user]);
+
   useEffect(() => {
     return subscribeAuthSessionExpired((message) => {
       if (sessionAlertVisibleRef.current) return;
       sessionAlertVisibleRef.current = true;
 
-      Alert.alert(
-        '登录提醒',
-        message || '你的账号已在其他设备登录，请重新登录。',
-        [
+      feedback.dialog({
+        title: '登录提醒',
+        message: message || '你的账号已在其他设备登录，请重新登录。',
+        dismissable: false,
+        actions: [
           {
-            text: '确定',
-            onPress: () => {
-              void (async () => {
-                await signOut();
-                sessionAlertVisibleRef.current = false;
-                router.replace('/login');
-              })();
+            label: '重新登录',
+            variant: 'primary',
+            onPress: async () => {
+              await signOut();
+              sessionAlertVisibleRef.current = false;
+              router.replace('/login');
             },
           },
         ],
-        { cancelable: false }
-      );
+      });
     });
-  }, [signOut]);
+  }, [feedback, signOut]);
 
   const value = useMemo(
     () => ({
@@ -134,8 +167,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signIn,
       signUp,
       signOut,
+      updateUser,
+      refreshUser,
     }),
-    [user, isReady, signIn, signUp, signOut]
+    [user, isReady, signIn, signUp, signOut, updateUser, refreshUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

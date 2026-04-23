@@ -1,28 +1,159 @@
-import { Stack, useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useCallback, useMemo, useState } from 'react';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
+import { Image } from 'expo-image';
+import { Animated, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useEffect } from 'react';
 
+import { useFeedback } from '@/components/app-feedback';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { readMarketCartItems, readMarketWishItems, removeMarketCartItems, removeMarketWishItems, updateMarketCartItemQuantity, writeMarketCheckoutItems, type MarketCartItem, type MarketWishItem } from '@/lib/market-cart';
+import { fetchMarketProducts, type MarketProduct } from '@/lib/market-api';
 import BackIcon from '@/public/icon/fanhuijiantou.svg';
 import CartIcon from '@/public/icon/gouwuche.svg';
 import PictureIcon from '@/public/icon/tupian.svg';
 import SearchIcon from '@/public/icon/sousuo.svg';
+import DefaultShopIcon from '@/public/icon/dp.svg';
 
 type CartMode = 'cart' | 'wish';
+type CartShopGroup = {
+  key: string;
+  shop: string;
+  shopId: number | null;
+  shopAvatarUrl: string;
+  items: MarketCartItem[];
+};
 
-const recommendProducts = [
-  { id: 'cart-recommend-1', name: '魅大咖 微宽松水洗牛仔裤', price: '115.9', sold: '89342' },
-  { id: 'cart-recommend-2', name: '卡得利 · 大象耳朵床 北欧主卧双人床', price: '2256', sold: '86' },
-  { id: 'cart-recommend-3', name: '轻薄防晒衬衫外套', price: '79', sold: '6120' },
-  { id: 'cart-recommend-4', name: '奶油风实木床头柜', price: '189', sold: '836' },
-];
+function formatPrice(value: number) {
+  return Number(value || 0).toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
+}
+
+function shuffleProducts(products: MarketProduct[]) {
+  return [...products].sort(() => Math.random() - 0.5).slice(0, 6);
+}
+
+function maxCartQuantity(item: MarketCartItem) {
+  const limits = [Number(item.stock || 0), Number(item.purchaseLimit || 0)].filter((value) => value > 0);
+  return limits.length ? Math.min(...limits) : 999;
+}
+
+function groupCartItems(items: MarketCartItem[]) {
+  const map = new Map<string, CartShopGroup>();
+  items.forEach((item) => {
+    const key = String(item.shopId ?? (item.shop || 'default'));
+    const group = map.get(key) || {
+      key,
+      shop: item.shop || '默认店铺',
+      shopId: item.shopId,
+      shopAvatarUrl: item.shopAvatarUrl || '',
+      items: [],
+    };
+    if (!group.shopAvatarUrl && item.shopAvatarUrl) group.shopAvatarUrl = item.shopAvatarUrl;
+    group.items.push(item);
+    map.set(key, group);
+  });
+  return Array.from(map.values());
+}
 
 export default function CartScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ mode?: string }>();
+  const feedback = useFeedback();
   const [mode, setMode] = useState<CartMode>('cart');
+  const [cartItems, setCartItems] = useState<MarketCartItem[]>([]);
+  const [wishItems, setWishItems] = useState<MarketWishItem[]>([]);
+  const [recommendProducts, setRecommendProducts] = useState<MarketProduct[]>([]);
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const isCart = mode === 'cart';
+  const allSelected = cartItems.length > 0 && cartItems.every((item) => selectedKeys.includes(item.key));
+  const total = useMemo(
+    () => cartItems.reduce((sum, item) => selectedKeys.includes(item.key) ? sum + item.price * item.quantity : sum, 0),
+    [cartItems, selectedKeys],
+  );
+
+  useEffect(() => {
+    if (String(params.mode || '').toLowerCase() === 'wish') {
+      setMode('wish');
+      return;
+    }
+    setMode('cart');
+  }, [params.mode]);
+
+  const refresh = useCallback(async () => {
+    const [cart, wish, products] = await Promise.all([
+      readMarketCartItems(),
+      readMarketWishItems(),
+      fetchMarketProducts({ limit: 50 }).catch(() => []),
+    ]);
+    const usedIds = new Set([...cart.map((item) => item.productId), ...wish.map((item) => item.productId)]);
+    setCartItems(cart);
+    setSelectedKeys((current) => {
+      const validKeys = cart.map((item) => item.key);
+      const next = current.filter((key) => validKeys.includes(key));
+      return current.length ? next : validKeys;
+    });
+    setWishItems(wish);
+    setRecommendProducts(shuffleProducts(products.filter((item) => !usedIds.has(String(item.id)))));
+  }, []);
+
+  function toggleItem(key: string) {
+    setSelectedKeys((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
+  }
+
+  function toggleGroup(keys: string[]) {
+    setSelectedKeys((current) => {
+      const groupSelected = keys.every((key) => current.includes(key));
+      return groupSelected
+        ? current.filter((key) => !keys.includes(key))
+        : Array.from(new Set([...current, ...keys]));
+    });
+  }
+
+  function toggleAll() {
+    setSelectedKeys(allSelected ? [] : cartItems.map((item) => item.key));
+  }
+
+  async function changeCartQuantity(item: MarketCartItem, delta: number) {
+    const max = maxCartQuantity(item);
+    const nextQuantity = Math.min(max, Math.max(1, item.quantity + delta));
+    if (nextQuantity === item.quantity) {
+      if (delta > 0) feedback.toast(`最多购买 ${max} 件`);
+      return;
+    }
+    setCartItems(await updateMarketCartItemQuantity(item.key, nextQuantity));
+  }
+
+  async function deleteCartItem(key: string) {
+    const next = await removeMarketCartItems([key]);
+    setCartItems(next);
+    setSelectedKeys((current) => current.filter((item) => item !== key));
+    feedback.toast('已删除商品');
+  }
+
+  async function deleteWishItem(productId: string) {
+    const next = await removeMarketWishItems([productId]);
+    setWishItems(next);
+    feedback.toast('已从心愿单删除');
+  }
+
+  async function goCheckout() {
+    const selectedItems = cartItems.filter((item) => selectedKeys.includes(item.key));
+    if (!selectedItems.length) {
+      feedback.toast('勾选要结算的商品后再继续');
+      return;
+    }
+    await writeMarketCheckoutItems(selectedItems);
+    router.push('/checkout');
+  }
+
+  useFocusEffect(
+    useCallback(() => {
+      void refresh();
+    }, [refresh]),
+  );
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
@@ -55,21 +186,33 @@ export default function CartScreen() {
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-          {isCart ? <CartContent router={router} /> : <WishContent router={router} />}
-          <RecommendGrid router={router} />
+          {isCart ? (
+            <CartContent
+              router={router}
+              items={cartItems}
+              selectedKeys={selectedKeys}
+              onToggleItem={toggleItem}
+              onToggleGroup={toggleGroup}
+              onChangeQuantity={changeCartQuantity}
+              onDeleteItem={deleteCartItem}
+            />
+          ) : <WishContent router={router} items={wishItems} onDeleteItem={deleteWishItem} />}
+          <RecommendGrid router={router} products={recommendProducts} />
         </ScrollView>
 
         {isCart ? (
           <View style={styles.checkoutBar}>
-            <View style={styles.checkWrap}>
-              <View style={styles.checkCircle} />
+            <Pressable style={styles.checkWrap} onPress={toggleAll}>
+              <View style={[styles.checkCircle, allSelected && styles.checkCircleActive]}>
+                {allSelected ? <ThemedText style={styles.checkMark}>✓</ThemedText> : null}
+              </View>
               <ThemedText style={styles.checkText}>全选</ThemedText>
-            </View>
+            </Pressable>
             <View style={styles.totalWrap}>
               <ThemedText style={styles.totalLabel}>总计</ThemedText>
-              <ThemedText style={styles.totalPrice}>¥0</ThemedText>
+              <ThemedText style={styles.totalPrice}>¥{formatPrice(total)}</ThemedText>
             </View>
-            <Pressable style={styles.checkoutBtn}>
+            <Pressable style={styles.checkoutBtn} onPress={() => void goCheckout()}>
               <ThemedText style={styles.checkoutText}>结算</ThemedText>
             </Pressable>
           </View>
@@ -79,85 +222,227 @@ export default function CartScreen() {
   );
 }
 
-function CartContent({ router }: { router: ReturnType<typeof useRouter> }) {
+function CartContent({
+  router,
+  items,
+  selectedKeys,
+  onToggleItem,
+  onToggleGroup,
+  onChangeQuantity,
+  onDeleteItem,
+}: {
+  router: ReturnType<typeof useRouter>;
+  items: MarketCartItem[];
+  selectedKeys: string[];
+  onToggleItem: (key: string) => void;
+  onToggleGroup: (keys: string[]) => void;
+  onChangeQuantity: (item: MarketCartItem, delta: number) => void;
+  onDeleteItem: (key: string) => void;
+}) {
+  if (!items.length) {
+    return (
+      <View style={styles.emptyBlock}>
+        <CartIcon width={44} height={44} color="#C5CAD2" />
+        <ThemedText style={styles.emptyTitle}>购物车还是空的</ThemedText>
+        <ThemedText style={styles.emptyText}>去商品详情页加入喜欢的商品</ThemedText>
+      </View>
+    );
+  }
+
   return (
     <View>
-      <View style={styles.cartStore}>
-        <View style={styles.checkCircle} />
-        <View style={styles.storeAvatar} />
-        <ThemedText numberOfLines={1} style={styles.storeName}>是CC家的呀</ThemedText>
-        <ThemedText style={styles.storeArrow}>›</ThemedText>
-        <Pressable style={styles.couponBtn}>
-          <ThemedText style={styles.couponBtnText}>领券</ThemedText>
-        </Pressable>
-      </View>
-      <View style={styles.cartItem}>
-        <View style={styles.checkCircle} />
-        <Pressable
-          style={styles.cartImage}
-          onPress={() =>
-            router.push({
-              pathname: '/product/[id]',
-              params: { id: 'cart-cc-jeans', name: '是CC家的呀 · 美式复古做旧牛仔裤', price: '121', sold: '3127' },
-            })
-          }>
-          <PictureIcon width={46} height={46} color="#C6CBD3" />
-        </Pressable>
-        <View style={styles.cartInfo}>
-          <ThemedText numberOfLines={2} style={styles.cartTitle}>是CC家的呀 · 美式复古做旧牛仔裤</ThemedText>
-          <ThemedText style={styles.cartSpec}>复古蓝 / 建议125-140斤</ThemedText>
-          <ThemedText style={styles.cartCoupon}>店铺立减2元 退换包运费</ThemedText>
-          <View style={styles.cartPriceRow}>
-            <ThemedText style={styles.cartPrice}>到手价 ¥121</ThemedText>
-            <ThemedText style={styles.cartOrigin}>¥158</ThemedText>
-            <View style={styles.cartQty}><ThemedText style={styles.cartQtyText}>×1</ThemedText></View>
+      {groupCartItems(items).map((group) => {
+        const groupKeys = group.items.map((item) => item.key);
+        const groupSelected = groupKeys.every((key) => selectedKeys.includes(key));
+        const firstItem = group.items[0];
+        return (
+        <View key={group.key} style={styles.cartShopGroup}>
+          <View style={styles.cartStore}>
+            <Pressable style={[styles.checkCircle, groupSelected && styles.checkCircleActive]} onPress={() => onToggleGroup(groupKeys)}>
+              {groupSelected ? <ThemedText style={styles.checkMark}>✓</ThemedText> : null}
+            </Pressable>
+            <View style={styles.storeAvatar}>
+              {group.shopAvatarUrl ? (
+                <Image source={{ uri: group.shopAvatarUrl }} style={styles.storeAvatarImage} contentFit="cover" />
+              ) : (
+                <DefaultShopIcon width={14} height={14} />
+              )}
+            </View>
+            <ThemedText numberOfLines={1} style={styles.storeName}>{group.shop}</ThemedText>
+            <ThemedText style={styles.storeArrow}>›</ThemedText>
+            <Pressable
+              style={styles.couponBtn}
+              onPress={() =>
+                router.push({
+                  pathname: '/product/[id]',
+                  params: { id: firstItem.productId, name: firstItem.name, price: String(firstItem.price), sold: firstItem.soldText, openCoupon: '1' },
+                })
+              }>
+              <ThemedText style={styles.couponBtnText}>领券</ThemedText>
+            </Pressable>
           </View>
+          {group.items.map((item, index) => (
+            <SwipeDeleteRow key={item.key} onDelete={() => onDeleteItem(item.key)}>
+              <View style={[styles.cartItem, index > 0 && styles.cartItemDivider]}>
+                <Pressable style={[styles.checkCircle, selectedKeys.includes(item.key) && styles.checkCircleActive]} onPress={() => onToggleItem(item.key)}>
+                  {selectedKeys.includes(item.key) ? <ThemedText style={styles.checkMark}>✓</ThemedText> : null}
+                </Pressable>
+                <Pressable
+                  style={styles.cartImage}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/product/[id]',
+                      params: { id: item.productId, name: item.name, price: String(item.price), sold: item.soldText },
+                    })
+                  }>
+                  {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.imagePhoto} contentFit="cover" /> : <PictureIcon width={46} height={46} color="#C6CBD3" />}
+                </Pressable>
+                <View style={styles.cartInfo}>
+                  <ThemedText numberOfLines={2} style={styles.cartTitle}>{item.name}</ThemedText>
+                  <ThemedText style={styles.cartSpec}>{item.specText}</ThemedText>
+                  <ThemedText style={styles.cartCoupon}>店铺优惠 退换包运费</ThemedText>
+                  <View style={styles.cartPriceRow}>
+                    <ThemedText style={styles.cartPrice}>到手价 ¥{formatPrice(item.price)}</ThemedText>
+                    {item.originPrice > item.price ? <ThemedText style={styles.cartOrigin}>¥{formatPrice(item.originPrice)}</ThemedText> : null}
+                    <View style={styles.cartQtyStepper}>
+                      <Pressable style={styles.cartQtyBtn} onPress={() => onChangeQuantity(item, -1)}>
+                        <ThemedText style={styles.cartQtyBtnText}>−</ThemedText>
+                      </Pressable>
+                      <View style={styles.cartQtyValue}>
+                        <ThemedText style={styles.cartQtyText}>{item.quantity}</ThemedText>
+                      </View>
+                      <Pressable style={styles.cartQtyBtn} onPress={() => onChangeQuantity(item, 1)}>
+                        <ThemedText style={styles.cartQtyBtnText}>＋</ThemedText>
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              </View>
+            </SwipeDeleteRow>
+          ))}
         </View>
-      </View>
+      )})}
     </View>
   );
 }
 
-function WishContent({ router }: { router: ReturnType<typeof useRouter> }) {
+function WishContent({ router, items, onDeleteItem }: { router: ReturnType<typeof useRouter>; items: MarketWishItem[]; onDeleteItem: (productId: string) => void }) {
+  if (!items.length) {
+    return (
+      <View>
+        <View style={styles.wishTabs}>
+          <ThemedText style={[styles.wishTabText, styles.wishTabTextActive]}>全部</ThemedText>
+          <ThemedText style={styles.wishTabText}>可售</ThemedText>
+        </View>
+        <View style={styles.emptyBlock}>
+          <PictureIcon width={44} height={44} color="#C5CAD2" />
+          <ThemedText style={styles.emptyTitle}>心愿单暂无商品</ThemedText>
+          <ThemedText style={styles.emptyText}>在商品页点右上角收藏加入心愿单</ThemedText>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View>
       <View style={styles.wishTabs}>
         <ThemedText style={[styles.wishTabText, styles.wishTabTextActive]}>全部</ThemedText>
         <ThemedText style={styles.wishTabText}>可售</ThemedText>
       </View>
-      <Pressable
-        style={styles.wishItem}
-        onPress={() =>
-          router.push({
-            pathname: '/product/[id]',
-            params: { id: 'wish-jeans', name: '是CC家的呀 · 美式复古做旧牛仔裤', price: '126', sold: '3127' },
-          })
-        }>
-        <View style={styles.wishImage}>
-          <PictureIcon width={54} height={54} color="#C6CBD3" />
-        </View>
-        <View style={styles.wishInfo}>
-          <ThemedText numberOfLines={2} style={styles.wishTitle}>是CC家的呀 · 美式复古做旧牛仔裤</ThemedText>
-          <View style={styles.wishMetaRow}>
-            <ThemedText style={styles.wishMeta}>6443人已加购</ThemedText>
-            <ThemedText style={styles.wishMeta}>已售3127</ThemedText>
-          </View>
-          <View style={styles.wishPriceRow}>
-            <ThemedText style={styles.wishPrice}>¥126</ThemedText>
-            <ThemedText style={styles.cartOrigin}>¥158</ThemedText>
-          </View>
-          <View style={styles.wishActions}>
-            <Pressable style={styles.wishActionBtn}><ThemedText style={styles.wishActionText}>进店</ThemedText></Pressable>
-            <Pressable style={styles.wishActionBtn}><ThemedText style={styles.wishActionText}>找相似</ThemedText></Pressable>
-            <Pressable style={styles.wishCartBtn}><CartIcon width={16} height={16} color="#20242B" /></Pressable>
-          </View>
-        </View>
-      </Pressable>
+      {items.map((item) => (
+        <SwipeDeleteRow key={item.productId} onDelete={() => onDeleteItem(item.productId)}>
+          <Pressable
+            style={styles.wishItem}
+            onPress={() =>
+              router.push({
+                pathname: '/product/[id]',
+                params: { id: item.productId, name: item.name, price: String(item.price), sold: item.soldText },
+              })
+            }>
+            <View style={styles.wishImage}>
+              {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.imagePhoto} contentFit="cover" /> : <PictureIcon width={54} height={54} color="#C6CBD3" />}
+            </View>
+            <View style={styles.wishInfo}>
+              <ThemedText numberOfLines={2} style={styles.wishTitle}>{item.name}</ThemedText>
+              <View style={styles.wishMetaRow}>
+                <ThemedText style={styles.wishMeta}>{item.favorites || 0}人想要</ThemedText>
+                <ThemedText style={styles.wishMeta}>已售{item.soldText}</ThemedText>
+              </View>
+              <View style={styles.wishPriceRow}>
+                <ThemedText style={styles.wishPrice}>¥{formatPrice(item.price)}</ThemedText>
+                {item.originPrice > item.price ? <ThemedText style={styles.cartOrigin}>¥{formatPrice(item.originPrice)}</ThemedText> : null}
+              </View>
+              <View style={styles.wishActions}>
+                <Pressable
+                  style={styles.wishActionBtn}
+                  onPress={(event) => {
+                    event.stopPropagation();
+                    router.push({
+                      pathname: '/shop/[id]',
+                      params: { id: String(item.shopId || 0), name: item.shop || '店铺' },
+                    });
+                  }}>
+                  <ThemedText style={styles.wishActionText}>进店</ThemedText>
+                </Pressable>
+                <Pressable
+                  style={styles.wishCartBtn}
+                  onPress={(event) => {
+                    event.stopPropagation();
+                    router.push({
+                      pathname: '/product/[id]',
+                      params: {
+                        id: item.productId,
+                        name: item.name,
+                        price: String(item.price),
+                        sold: item.soldText,
+                        openCart: '1',
+                      },
+                    });
+                  }}>
+                  <CartIcon width={16} height={16} color="#20242B" />
+                </Pressable>
+              </View>
+            </View>
+          </Pressable>
+        </SwipeDeleteRow>
+      ))}
     </View>
   );
 }
 
-function RecommendGrid({ router }: { router: ReturnType<typeof useRouter> }) {
+function SwipeDeleteRow({ children, onDelete }: { children: React.ReactNode; onDelete: () => void }) {
+  return (
+    <Swipeable
+      overshootRight={false}
+      friction={1.8}
+      rightThreshold={36}
+      renderRightActions={(progress) => {
+        const actionsTranslate = progress.interpolate({
+          inputRange: [0, 1],
+          outputRange: [84, 0],
+          extrapolate: 'clamp',
+        });
+        const btnTranslate = progress.interpolate({
+          inputRange: [0, 1],
+          outputRange: [12, 0],
+          extrapolate: 'clamp',
+        });
+        return (
+          <Animated.View style={[styles.swipeDeleteActions, { transform: [{ translateX: actionsTranslate }] }]}>
+            <Animated.View style={[styles.swipeDeleteActionAnimated, { transform: [{ translateX: btnTranslate }] }]}>
+              <Pressable style={styles.swipeDeleteBtn} onPress={onDelete}>
+                <ThemedText style={styles.swipeDeleteText}>删除</ThemedText>
+              </Pressable>
+            </Animated.View>
+          </Animated.View>
+        );
+      }}>
+      {children}
+    </Swipeable>
+  );
+}
+
+function RecommendGrid({ router, products }: { router: ReturnType<typeof useRouter>; products: MarketProduct[] }) {
   return (
     <View style={styles.recommendSection}>
       <View style={styles.recommendTitleRow}>
@@ -166,24 +451,24 @@ function RecommendGrid({ router }: { router: ReturnType<typeof useRouter> }) {
         <View style={styles.titleLine} />
       </View>
       <View style={styles.productGrid}>
-        {recommendProducts.map((item) => (
+        {products.map((item) => (
           <Pressable
             key={item.id}
             style={styles.productCard}
             onPress={() =>
               router.push({
                 pathname: '/product/[id]',
-                params: { id: item.id, name: item.name, price: item.price, sold: item.sold },
+                params: { id: String(item.id), name: item.name, price: String(item.price), sold: item.soldText },
               })
             }>
             <View style={styles.productImage}>
-              <PictureIcon width={52} height={52} color="#D0D3D8" />
+              {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.imagePhoto} contentFit="cover" /> : <PictureIcon width={52} height={52} color="#D0D3D8" />}
             </View>
             <View style={styles.productBody}>
               <ThemedText numberOfLines={2} style={styles.productName}>{item.name}</ThemedText>
               <View style={styles.productMeta}>
-                <ThemedText style={styles.productPrice}>¥{item.price}</ThemedText>
-                <ThemedText style={styles.productSold}>已售 {item.sold}</ThemedText>
+                <ThemedText style={styles.productPrice}>¥{formatPrice(item.price)}</ThemedText>
+                <ThemedText style={styles.productSold}>已售 {item.soldText}</ThemedText>
               </View>
             </View>
           </Pressable>
@@ -215,6 +500,7 @@ const styles = StyleSheet.create({
   manageBtn: { height: 36, paddingHorizontal: 5, alignItems: 'center', justifyContent: 'center' },
   manageText: { fontSize: 14, color: '#20242B', fontWeight: '700' },
   scrollContent: { paddingBottom: 78 },
+  cartShopGroup: { marginTop: 8, backgroundColor: '#FFF' },
   cartStore: {
     height: 46,
     paddingHorizontal: 16,
@@ -223,8 +509,11 @@ const styles = StyleSheet.create({
     gap: 9,
     backgroundColor: '#FFF',
   },
-  checkCircle: { width: 18, height: 18, borderRadius: 9, borderWidth: 1, borderColor: '#DADDE2', backgroundColor: '#FFF' },
-  storeAvatar: { width: 18, height: 18, borderRadius: 9, backgroundColor: '#C3A17B' },
+  checkCircle: { width: 18, height: 18, borderRadius: 9, borderWidth: 1, borderColor: '#DADDE2', backgroundColor: '#FFF', alignItems: 'center', justifyContent: 'center' },
+  checkCircleActive: { borderColor: '#F02D47', backgroundColor: '#F02D47' },
+  checkMark: { fontSize: 12, lineHeight: 14, color: '#FFF', fontWeight: '900' },
+  storeAvatar: { width: 20, height: 20, borderRadius: 10, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF4E3' },
+  storeAvatarImage: { width: '100%', height: '100%' },
   storeName: { maxWidth: 180, fontSize: 14, color: '#20242B', fontWeight: '800' },
   storeArrow: { fontSize: 22, color: '#20242B', lineHeight: 24 },
   couponBtn: {
@@ -246,7 +535,24 @@ const styles = StyleSheet.create({
     gap: 10,
     backgroundColor: '#FFF',
   },
-  cartImage: { width: 92, height: 92, borderRadius: 4, alignItems: 'center', justifyContent: 'center', backgroundColor: '#E7E8EA' },
+  swipeDeleteActions: {
+    width: 84,
+    alignItems: 'flex-end',
+    justifyContent: 'flex-start',
+    overflow: 'hidden',
+  },
+  swipeDeleteActionAnimated: { alignSelf: 'stretch' },
+  swipeDeleteBtn: {
+    width: 84,
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FF2442',
+  },
+  swipeDeleteText: { color: '#FFF', fontSize: 18, fontWeight: '800' },
+  cartItemDivider: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#F1F2F4', paddingTop: 14 },
+  cartImage: { width: 92, height: 92, borderRadius: 4, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', backgroundColor: '#E7E8EA' },
+  imagePhoto: { width: '100%', height: '100%' },
   cartInfo: { flex: 1, minHeight: 92, gap: 5 },
   cartTitle: { fontSize: 14, lineHeight: 19, color: '#20242B', fontWeight: '700' },
   cartSpec: { fontSize: 12, color: '#8B9098', fontWeight: '600' },
@@ -254,13 +560,16 @@ const styles = StyleSheet.create({
   cartPriceRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, marginTop: 1 },
   cartPrice: { fontSize: 18, color: '#F02D47', fontWeight: '900' },
   cartOrigin: { fontSize: 12, color: '#9EA3AA', textDecorationLine: 'line-through', fontWeight: '700' },
-  cartQty: { marginLeft: 'auto', height: 24, borderRadius: 12, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F6F6F7' },
+  cartQtyStepper: { marginLeft: 'auto', height: 26, borderRadius: 13, flexDirection: 'row', alignItems: 'center', overflow: 'hidden', backgroundColor: '#F6F6F7' },
+  cartQtyBtn: { width: 28, height: 26, alignItems: 'center', justifyContent: 'center' },
+  cartQtyBtnText: { fontSize: 14, color: '#343941', fontWeight: '900' },
+  cartQtyValue: { minWidth: 28, height: 26, alignItems: 'center', justifyContent: 'center' },
   cartQtyText: { fontSize: 12, color: '#555B66', fontWeight: '800' },
   wishTabs: { height: 48, flexDirection: 'row', alignItems: 'center', gap: 28, paddingHorizontal: 16, backgroundColor: '#FFF' },
   wishTabText: { fontSize: 14, color: '#8B9098', fontWeight: '800' },
   wishTabTextActive: { color: '#20242B' },
-  wishItem: { flexDirection: 'row', gap: 10, padding: 12, backgroundColor: '#FFF' },
-  wishImage: { width: 108, height: 108, borderRadius: 4, alignItems: 'center', justifyContent: 'center', backgroundColor: '#E7E8EA' },
+  wishItem: { flexDirection: 'row', gap: 10, padding: 12, marginTop: 8, backgroundColor: '#FFF' },
+  wishImage: { width: 108, height: 108, borderRadius: 4, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', backgroundColor: '#E7E8EA' },
   wishInfo: { flex: 1, gap: 6 },
   wishTitle: { fontSize: 14, lineHeight: 19, color: '#20242B', fontWeight: '700' },
   wishMetaRow: { flexDirection: 'row', gap: 12 },
@@ -271,6 +580,9 @@ const styles = StyleSheet.create({
   wishActionBtn: { height: 28, borderRadius: 14, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF', borderWidth: StyleSheet.hairlineWidth, borderColor: '#E5E7EB' },
   wishActionText: { fontSize: 12, color: '#20242B', fontWeight: '800' },
   wishCartBtn: { width: 30, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF', borderWidth: StyleSheet.hairlineWidth, borderColor: '#E5E7EB' },
+  emptyBlock: { marginTop: 8, minHeight: 160, alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#FFF' },
+  emptyTitle: { fontSize: 15, color: '#20242B', fontWeight: '900' },
+  emptyText: { fontSize: 12, color: '#8B9098', fontWeight: '700' },
   recommendSection: { paddingTop: 18 },
   recommendTitleRow: { height: 34, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12 },
   titleLine: { width: 42, height: StyleSheet.hairlineWidth, backgroundColor: '#DADDE2' },
@@ -284,7 +596,7 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: '#F0F0F0',
   },
-  productImage: { width: '100%', aspectRatio: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F4F4F5' },
+  productImage: { width: '100%', aspectRatio: 1, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', backgroundColor: '#F4F4F5' },
   productBody: { padding: 8, gap: 6 },
   productName: { fontSize: 13, lineHeight: 18, color: '#20242B', fontWeight: '700' },
   productMeta: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 6 },

@@ -1,34 +1,88 @@
+import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AppActivityIndicator } from '@/components/app-loading';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { fetchMarketCategoryChildren, fetchMarketProducts, type MarketCategoryChild, type MarketProduct } from '@/lib/market-api';
 import BackIcon from '@/public/icon/fanhuijiantou.svg';
 import PictureIcon from '@/public/icon/tupian.svg';
 
-const fallbackTabs = ['推荐', '床', '窗帘', '收纳', '地毯', '吊灯', '香薰香氛'];
-
-function makeProducts(title: string, tab: string) {
-  return [
-    { id: `${title}-${tab}-1`, name: `卡得利 · ${title}${tab} 真皮实木应灯悬`, price: '3887', sold: '8' },
-    { id: `${title}-${tab}-2`, name: `牛马草坪苔微景观 限时立减`, price: '29.8', sold: '4.8万+' },
-    { id: `${title}-${tab}-3`, name: `${title}家用透明收纳箱 加厚耐用`, price: '15', sold: '7.3万+' },
-    { id: `${title}-${tab}-4`, name: `想想缓率 因为是关键款 轻奢地球仪摆件`, price: '145', sold: '2.6万+' },
-    { id: `${title}-${tab}-5`, name: `北欧简约${tab}家居软装组合`, price: '89', sold: '1.2万+' },
-    { id: `${title}-${tab}-6`, name: `${title}精选好物 小户型适用`, price: '59.9', sold: '9021' },
-  ];
+function formatPrice(value: number) {
+  return Number(value || 0).toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
 }
 
 export default function MarketCategoryScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ title?: string; parent?: string }>();
-  const title = String(params.title || '卧室');
-  const parent = String(params.parent || '推荐');
-  const tabs = useMemo(() => [parent, ...fallbackTabs.filter((item) => item !== parent)].slice(0, 7), [parent]);
-  const [activeTab, setActiveTab] = useState(tabs[0]);
-  const products = useMemo(() => makeProducts(title, activeTab), [activeTab, title]);
+  const params = useLocalSearchParams<{ title?: string; parent?: string; categoryId?: string }>();
+  const title = String(params.title || '推荐');
+  const categoryId = Number(params.categoryId || 0);
+  const [tabs, setTabs] = useState<MarketCategoryChild[]>([]);
+  const [activeCategoryId, setActiveCategoryId] = useState(categoryId);
+  const [products, setProducts] = useState<MarketProduct[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errorText, setErrorText] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    async function loadData() {
+      let nextCategoryId = categoryId;
+      let nextTabs: MarketCategoryChild[] = [];
+      if (categoryId > 0) {
+        nextTabs = await fetchMarketCategoryChildren(categoryId);
+        if (nextTabs.length) nextCategoryId = nextTabs[0].id;
+      }
+      const data = await fetchMarketProducts({ categoryId: nextCategoryId || undefined, keyword: nextCategoryId ? undefined : title, limit: 50 });
+      return { data, nextTabs, nextCategoryId };
+    }
+    loadData()
+      .then((data) => {
+        if (!alive) return;
+        setTabs(data.nextTabs);
+        setActiveCategoryId(data.nextCategoryId);
+        setProducts(data.data);
+        setErrorText('');
+      })
+      .catch((error: Error) => {
+        if (!alive) return;
+        setErrorText(error.message || '商品加载失败');
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [categoryId, title]);
+
+  useEffect(() => {
+    if (!activeCategoryId || activeCategoryId === categoryId && tabs.length !== 1) return;
+    let alive = true;
+    setLoading(true);
+    fetchMarketProducts({ categoryId: activeCategoryId, limit: 50 })
+      .then((data) => {
+        if (!alive) return;
+        setProducts(data);
+        setErrorText('');
+      })
+      .catch((error: Error) => {
+        if (!alive) return;
+        setErrorText(error.message || '商品加载失败');
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [activeCategoryId, categoryId, tabs.length]);
+
+  const showTabs = tabs.length > 1;
+  const displayProducts = useMemo(() => products, [products]);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -42,49 +96,56 @@ export default function MarketCategoryScreen() {
           <View style={styles.headerSpace} />
         </View>
 
-        <View style={styles.tabWrap}>
+        {showTabs ? <View style={styles.tabWrap}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabContent}>
             {tabs.map((item) => {
-              const active = item === activeTab;
+              const active = item.id === activeCategoryId;
               return (
-                <Pressable key={item} style={styles.tabItem} onPress={() => setActiveTab(item)}>
-                  <ThemedText style={[styles.tabText, active && styles.tabTextActive]}>{item}</ThemedText>
+                <Pressable key={item.key} style={styles.tabItem} onPress={() => setActiveCategoryId(item.id)}>
+                  <ThemedText style={[styles.tabText, active && styles.tabTextActive]}>{item.title}</ThemedText>
                   {active ? <View style={styles.tabLine} /> : null}
                 </Pressable>
               );
             })}
           </ScrollView>
-        </View>
+        </View> : null}
 
-        <FlatList
-          data={products}
-          keyExtractor={(item) => item.id}
-          numColumns={2}
-          columnWrapperStyle={styles.productColumns}
-          contentContainerStyle={styles.productList}
-          showsVerticalScrollIndicator={false}
-          renderItem={({ item }) => (
-            <Pressable
-              style={styles.productCard}
-              onPress={() =>
-                router.push({
-                  pathname: '/product/[id]',
-                  params: { id: item.id, name: item.name, price: item.price, sold: item.sold },
-                })
-              }>
-              <View style={styles.productImage}>
-                <PictureIcon width={58} height={58} color="#D0D3D8" />
-              </View>
-              <View style={styles.productBody}>
-                <ThemedText numberOfLines={2} style={styles.productName}>{item.name}</ThemedText>
-                <View style={styles.productMeta}>
-                  <ThemedText style={styles.productPrice}>¥{item.price}</ThemedText>
-                  <ThemedText style={styles.productSold}>已售 {item.sold}</ThemedText>
+        {loading ? (
+          <View style={styles.stateBox}><AppActivityIndicator label="正在加载商品" /></View>
+        ) : errorText ? (
+          <View style={styles.stateBox}><ThemedText style={styles.stateText}>{errorText}</ThemedText></View>
+        ) : (
+          <FlatList
+            data={displayProducts}
+            keyExtractor={(item) => String(item.id)}
+            numColumns={2}
+            columnWrapperStyle={styles.productColumns}
+            contentContainerStyle={styles.productList}
+            showsVerticalScrollIndicator={false}
+            ListEmptyComponent={<View style={styles.stateBox}><ThemedText style={styles.stateText}>暂无上架商品</ThemedText></View>}
+            renderItem={({ item }) => (
+              <Pressable
+                style={styles.productCard}
+                onPress={() =>
+                  router.push({
+                    pathname: '/product/[id]',
+                    params: { id: String(item.id), name: item.name, price: formatPrice(item.price), sold: item.soldText },
+                  })
+                }>
+                <View style={styles.productImage}>
+                  {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.productPhoto} contentFit="cover" /> : <PictureIcon width={58} height={58} color="#D0D3D8" />}
                 </View>
-              </View>
-            </Pressable>
-          )}
-        />
+                <View style={styles.productBody}>
+                  <ThemedText numberOfLines={2} style={styles.productName}>{item.name}</ThemedText>
+                  <View style={styles.productMeta}>
+                    <ThemedText style={styles.productPrice}>¥{formatPrice(item.price)}</ThemedText>
+                    <ThemedText style={styles.productSold}>已售 {item.soldText}</ThemedText>
+                  </View>
+                </View>
+              </Pressable>
+            )}
+          />
+        )}
       </ThemedView>
     </SafeAreaView>
   );
@@ -103,6 +164,8 @@ const styles = StyleSheet.create({
   tabText: { fontSize: 14, color: '#555B66', fontWeight: '700' },
   tabTextActive: { color: '#111' },
   tabLine: { position: 'absolute', bottom: 3, width: 18, height: 2, borderRadius: 1, backgroundColor: '#111' },
+  stateBox: { minHeight: 220, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 },
+  stateText: { fontSize: 13, color: '#777D87', fontWeight: '700' },
   productList: { paddingHorizontal: 8, paddingTop: 10, paddingBottom: 24 },
   productColumns: { gap: 8, marginBottom: 10 },
   productCard: {
@@ -115,6 +178,7 @@ const styles = StyleSheet.create({
     borderColor: '#F0F0F0',
   },
   productImage: { width: '100%', aspectRatio: 1.12, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F4F4F5' },
+  productPhoto: { width: '100%', height: '100%' },
   productBody: { padding: 8, gap: 6 },
   productName: { fontSize: 13, lineHeight: 18, color: '#20242B', fontWeight: '700' },
   productMeta: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 6 },
