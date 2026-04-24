@@ -25,6 +25,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
 import { useAuth } from '@/contexts/auth-context';
+import { avatarSource } from '@/lib/avatar-source';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { hasContentRef, setContentRef } from '@/lib/content-refs';
 import { postJson, postPublicJson } from '@/lib/post-json';
@@ -836,11 +837,7 @@ export default function NoteDetailScreen() {
           headerTitle: () =>
             note ? (
               <View style={styles.headerUser}>
-                {note.authorAvatar ? (
-                  <ExpoImage source={{ uri: note.authorAvatar }} style={styles.headerAvatar} contentFit="cover" />
-                ) : (
-                  <View style={[styles.headerAvatar, styles.avatarFallback]} />
-                )}
+                <ExpoImage source={avatarSource(note.authorAvatar)} style={styles.headerAvatar} contentFit="cover" />
                 <ThemedText style={styles.headerName}>{note.authorName}</ThemedText>
               </View>
             ) : (
@@ -928,11 +925,7 @@ export default function NoteDetailScreen() {
               {note.comments.length ? (
                 note.comments.map((item, index) => (
                   <View key={item.localKey} style={[styles.commentCard, { borderBottomColor: border }]}>
-                    {item.avatarUri ? (
-                      <ExpoImage source={{ uri: item.avatarUri }} style={styles.commentAvatar} contentFit="cover" />
-                    ) : (
-                      <View style={[styles.commentAvatar, styles.avatarFallback]} />
-                    )}
+                    <ExpoImage source={avatarSource(item.avatarUri)} style={styles.commentAvatar} contentFit="cover" />
                     <View style={styles.commentBody}>
                       <View style={styles.commentTop}>
                         <ThemedText style={styles.commentName}>{item.name}</ThemedText>
@@ -1031,11 +1024,7 @@ export default function NoteDetailScreen() {
               ListEmptyComponent={<ThemedText style={[styles.stateText, { color: muted }]}>还没有评论，快来抢沙发</ThemedText>}
               renderItem={({ item }) => (
                 <View style={styles.panelCommentItem}>
-                  {item.avatarUri ? (
-                    <ExpoImage source={{ uri: item.avatarUri }} style={styles.panelCommentAvatar} contentFit="cover" />
-                  ) : (
-                    <View style={[styles.panelCommentAvatar, styles.avatarFallback]} />
-                  )}
+                  <ExpoImage source={avatarSource(item.avatarUri)} style={styles.panelCommentAvatar} contentFit="cover" />
                   <View style={styles.panelCommentMain}>
                     <ThemedText style={styles.panelCommentName}>{item.name}</ThemedText>
                     <ThemedText style={styles.panelCommentText}>{item.text}</ThemedText>

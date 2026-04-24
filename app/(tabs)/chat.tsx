@@ -10,8 +10,8 @@ import { AppActivityIndicator } from '@/components/app-loading';
 import { useFeedback } from '@/components/app-feedback';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { resolveMediaUrl } from '@/constants/api';
 import { useAuth } from '@/contexts/auth-context';
+import { avatarSource } from '@/lib/avatar-source';
 import { ensureChatMessageTimeMarkers, type ChatMessageTimeMarker } from '@/lib/chat-message-times';
 import { latestMessageKey, readChatReadMarkers, writeConversationReadMarker, type ChatReadMarker } from '@/lib/chat-read-markers';
 import { connectChatSocket } from '@/lib/chat-socket';
@@ -129,7 +129,7 @@ function formatMessageTime(value: unknown) {
 }
 
 function avatar(url?: string) {
-  return resolveMediaUrl(String(url || '').replace(/^\.\.\//, ''));
+  return avatarSource(url);
 }
 
 type ChatSocketPacket = {
@@ -437,11 +437,7 @@ export default function ChatScreen() {
                     });
                   }}>
                   <View style={styles.avatarWrap}>
-                    {avatar(item.url) ? (
-                      <Image source={{ uri: avatar(item.url) }} style={styles.avatar} contentFit="cover" />
-                    ) : (
-                      <View style={[styles.avatar, styles.avatarFallback]} />
-                    )}
+                    <Image source={avatar(item.url)} style={styles.avatar} contentFit="cover" />
                     {unread > 0 ? (
                       <View style={styles.badge}>
                         <ThemedText style={styles.badgeText}>{unread > 99 ? '99+' : unread}</ThemedText>

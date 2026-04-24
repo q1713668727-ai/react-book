@@ -10,6 +10,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
 import { useAuth } from '@/contexts/auth-context';
+import { avatarSource } from '@/lib/avatar-source';
 import { feedItems as fallbackFeedItems } from '@/data/mock-xhs';
 import { hasContentRef, setContentRef } from '@/lib/content-refs';
 import { postJson, postPublicJson } from '@/lib/post-json';
@@ -172,7 +173,7 @@ function toFallbackFeedItem(item: FallbackFeedDto, likedIds: Set<string>): HomeF
     rawId: item.id,
     contentType: 'note',
     title: item.title,
-    brief: '游客模式演示内容',
+    brief: '没有数据展示的内容',
     imageUri: item.imageUri,
     likes: item.likes,
     liked: hasContentRef(likedIds, 'note', item.id),
@@ -396,11 +397,7 @@ export default function HomeScreen() {
                     {item.brief ? <ThemedText numberOfLines={2} style={styles.cardBrief}>{item.brief}</ThemedText> : null}
                     <View style={styles.cardInfo}>
                       <View style={styles.authorRow}>
-                        {item.authorAvatar ? (
-                          <Image source={{ uri: item.authorAvatar }} style={styles.authorAvatar} contentFit="cover" />
-                        ) : (
-                          <View style={styles.authorAvatarFallback} />
-                        )}
+                        <Image source={avatarSource(item.authorAvatar)} style={styles.authorAvatar} contentFit="cover" />
                         <ThemedText numberOfLines={1} style={styles.authorName}>{item.authorName}</ThemedText>
                       </View>
                       <Pressable

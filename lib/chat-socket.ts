@@ -9,9 +9,9 @@ function resolveSocketBase() {
     const url = new URL(apiBase);
     const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = url.hostname;
-    return `${protocol}//${host}:8001`;
+    return `${protocol}//${host}:8002`;
   } catch {
-    return 'ws://192.168.1.4:8001';
+    return 'ws://192.168.1.4:8002';
   }
 }
 

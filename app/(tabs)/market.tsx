@@ -9,6 +9,11 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { fetchMarketHome, type MarketCategory, type MarketCategoryChild, type MarketProduct } from '@/lib/market-api';
 import CameraIcon from '@/public/icon/paizhao.svg';
+import CartIcon from '@/public/icon/gouwuche.svg';
+import CouponIcon from '@/public/icon/youhuiquan.svg';
+import HistoryIcon from '@/public/icon/lishizuji.svg';
+import MessageIcon from '@/public/icon/kefuxiaoxi.svg';
+import OrderIcon from '@/public/icon/dingdan.svg';
 import PictureIcon from '@/public/icon/tupian.svg';
 
 type MarketShortcut = MarketCategoryChild & {
@@ -21,8 +26,16 @@ const recommendFixedShortcuts: MarketShortcut[] = [
   { id: -2, key: 'cart', title: '购物车', iconUrl: '', fixed: true, route: '/cart' },
   { id: -3, key: 'coupons', title: '优惠券', iconUrl: '', fixed: true, route: '/coupons' },
   { id: -4, key: 'service', title: '客服消息', iconUrl: '', fixed: true, route: '/product-service-list' },
-  { id: -5, key: 'history', title: '商品足迹', iconUrl: '', fixed: true, route: '/product-history' },
+  { id: -5, key: 'history', title: '历史足迹', iconUrl: '', fixed: true, route: '/product-history' },
 ];
+
+const fixedShortcutIcons = {
+  orders: OrderIcon,
+  cart: CartIcon,
+  coupons: CouponIcon,
+  service: MessageIcon,
+  history: HistoryIcon,
+} as const;
 
 function chunkFeatures(features: MarketShortcut[]) {
   const items = features.length ? features : [];
@@ -113,7 +126,9 @@ export default function MarketScreen() {
           <View style={styles.featurePanel}>
             {shortcutRows.map((row, rowIndex) => (
               <View key={`row-${rowIndex}`} style={styles.featureRow}>
-                {row.map((item) => (
+                {row.map((item) => {
+                  const FixedIcon = item.fixed ? fixedShortcutIcons[item.key as keyof typeof fixedShortcutIcons] : undefined;
+                  return (
                   <Pressable
                     key={item.key}
                     style={styles.featureItem}
@@ -148,11 +163,18 @@ export default function MarketScreen() {
                       });
                     }}>
                     <View style={styles.featureIconWrap}>
-                      {item.iconUrl ? <Image source={{ uri: item.iconUrl }} style={styles.featureIcon} contentFit="cover" /> : <PictureIcon width={28} height={28} color="#D85C75" />}
+                      {item.iconUrl ? (
+                        <Image source={{ uri: item.iconUrl }} style={styles.featureIcon} contentFit="cover" />
+                      ) : FixedIcon ? (
+                        <FixedIcon width={28} height={28} />
+                      ) : (
+                        <PictureIcon width={28} height={28} color="#D85C75" />
+                      )}
                     </View>
                     <ThemedText numberOfLines={1} style={styles.featureText}>{item.title}</ThemedText>
                   </Pressable>
-                ))}
+                  );
+                })}
               </View>
             ))}
           </View>

@@ -10,6 +10,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
 import { useAuth } from '@/contexts/auth-context';
+import { avatarSource } from '@/lib/avatar-source';
 import { createConversation, fetchAllUser, type FollowListItem } from '@/lib/redbook-api';
 import { postJson, postPublicJson } from '@/lib/post-json';
 import BackIcon from '@/public/icon/fanhuijiantou.svg';
@@ -149,7 +150,7 @@ function toSearchFeedItem(item: SearchContentDto, likedIds: Set<string>): Search
 }
 
 function toAvatar(url?: string) {
-  return resolveMediaUrl(String(url || '').replace(/^\.\.\//, ''));
+  return avatarSource(url);
 }
 
 function normalizeSearchType(value: unknown): SearchType {
@@ -490,11 +491,7 @@ export default function FindScreen() {
                       {item.brief ? <ThemedText numberOfLines={2} style={styles.cardBrief}>{item.brief}</ThemedText> : null}
                       <View style={styles.cardInfo}>
                         <View style={styles.authorRow}>
-                          {item.authorAvatar ? (
-                            <Image source={{ uri: item.authorAvatar }} style={styles.authorAvatar} contentFit="cover" />
-                          ) : (
-                            <View style={styles.authorAvatarFallback} />
-                          )}
+                          <Image source={avatarSource(item.authorAvatar)} style={styles.authorAvatar} contentFit="cover" />
                           <ThemedText numberOfLines={1} style={styles.authorName}>{item.authorName}</ThemedText>
                         </View>
                         <Pressable
@@ -547,11 +544,7 @@ export default function FindScreen() {
                         params: { account: targetAccount, name: String(item.name || ''), avatar: String(item.url || '') },
                       })
                     }>
-                    {toAvatar(item.url) ? (
-                      <Image source={{ uri: toAvatar(item.url) }} style={styles.avatar} contentFit="cover" />
-                    ) : (
-                      <View style={[styles.avatar, styles.avatarFallback]} />
-                    )}
+                    <Image source={toAvatar(item.url)} style={styles.avatar} contentFit="cover" />
                     <View style={styles.info}>
                       <ThemedText numberOfLines={1} style={styles.name}>
                         {item.name || '用户'}

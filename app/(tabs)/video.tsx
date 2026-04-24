@@ -22,6 +22,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
 import { useAuth } from '@/contexts/auth-context';
+import { avatarSource } from '@/lib/avatar-source';
 import { hasContentRef, setContentRef } from '@/lib/content-refs';
 import { postJson, postPublicJson } from '@/lib/post-json';
 import CommentIcon from '@/public/icon/pinglun.svg';
@@ -892,7 +893,7 @@ export default function VideoScreen() {
 
                   <View style={[styles.overlay, { bottom: insets.bottom + 10 }]}>
                     <View style={styles.authorRow}>
-                      {item.authorAvatar ? <Image source={{ uri: item.authorAvatar }} style={styles.avatar} contentFit="cover" /> : <View style={[styles.avatar, styles.videoFallback]} />}
+                      <Image source={avatarSource(item.authorAvatar)} style={styles.avatar} contentFit="cover" />
                       <Pressable
                         onPress={() => {
                           if (!item.account) return;
@@ -964,7 +965,7 @@ export default function VideoScreen() {
               ListEmptyComponent={<ThemedText style={styles.muted}>还没有评论，快来抢沙发</ThemedText>}
               renderItem={({ item }) => (
                 <View style={styles.commentItem}>
-                  {item.avatar ? <Image source={{ uri: resolveMediaUrl(item.avatar) }} style={styles.commentAvatar} contentFit="cover" /> : <View style={[styles.commentAvatar, styles.videoFallback]} />}
+                  <Image source={avatarSource(item.avatar)} style={styles.commentAvatar} contentFit="cover" />
                   <View style={styles.commentMain}>
                     <ThemedText style={styles.commentName}>{item.name || item.account || '用户'}</ThemedText>
                     <ThemedText style={styles.commentText}>{item.text}</ThemedText>

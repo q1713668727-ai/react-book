@@ -7,8 +7,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppActivityIndicator } from '@/components/app-loading';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { resolveMediaUrl } from '@/constants/api';
 import { useAuth } from '@/contexts/auth-context';
+import { avatarSource } from '@/lib/avatar-source';
 import { fetchFollowList, toggleFollow, type FollowListItem } from '@/lib/redbook-api';
 
 const tabs = [
@@ -21,7 +21,7 @@ const tabs = [
 type FollowTab = (typeof tabs)[number]['key'];
 
 function avatarUrl(url?: string) {
-  return resolveMediaUrl(String(url || '').replace(/^\.\.\//, ''));
+  return avatarSource(url);
 }
 
 export default function FollowFansScreen() {
@@ -122,11 +122,7 @@ export default function FollowFansScreen() {
                       params: { account: targetAccount, name: String(item.name || ''), avatar: String(item.url || '') },
                     })
                   }>
-                  {avatarUrl(item.url) ? (
-                    <Image source={{ uri: avatarUrl(item.url) }} style={styles.avatar} contentFit="cover" />
-                  ) : (
-                    <View style={[styles.avatar, styles.avatarFallback]} />
-                  )}
+                  <Image source={avatarUrl(item.url)} style={styles.avatar} contentFit="cover" />
                   <View style={styles.info}>
                     <ThemedText style={styles.name}>{item.name || targetAccount}</ThemedText>
                     <ThemedText style={styles.desc}>

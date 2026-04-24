@@ -10,6 +10,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
 import { useAuth } from '@/contexts/auth-context';
+import { avatarSource } from '@/lib/avatar-source';
 import { postJson } from '@/lib/post-json';
 import LikedIcon from '@/public/icon/xihuan.svg';
 import UnlikedIcon from '@/public/icon/xihuan_1.svg';
@@ -329,11 +330,7 @@ export default function UserProfileScreen() {
             ListHeaderComponent={
               <View style={styles.header}>
                 <View style={styles.profileRow}>
-                  {avatarUri ? (
-                    <Image source={{ uri: avatarUri }} style={styles.avatar} contentFit="cover" />
-                  ) : (
-                    <View style={[styles.avatar, styles.avatarFallback]} />
-                  )}
+                  <Image source={avatarSource(avatarUri)} style={styles.avatar} contentFit="cover" />
                   <View style={styles.profileInfo}>
                     <ThemedText style={styles.name}>{displayName}</ThemedText>
                     <ThemedText style={styles.meta}>小红书号：{profile?.account || account || '-'}</ThemedText>
@@ -413,11 +410,7 @@ export default function UserProfileScreen() {
                       {item.brief ? <ThemedText numberOfLines={2} style={styles.cardBrief}>{item.brief}</ThemedText> : null}
                       <View style={styles.cardInfo}>
                         <View style={styles.authorRow}>
-                          {authorAvatar ? (
-                            <Image source={{ uri: authorAvatar }} style={styles.authorAvatar} contentFit="cover" />
-                          ) : (
-                            <View style={styles.authorAvatarFallback} />
-                          )}
+                          <Image source={avatarSource(authorAvatar)} style={styles.authorAvatar} contentFit="cover" />
                           <ThemedText numberOfLines={1} style={styles.authorName}>{authorName}</ThemedText>
                         </View>
                         <Pressable

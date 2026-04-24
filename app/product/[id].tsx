@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFeedback } from '@/components/app-feedback';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { avatarSource } from '@/lib/avatar-source';
 import { readAddressItems, setDefaultAddressItem, type AddressItem } from '@/lib/address-book';
 import { calculateCoupons, couponLevelOf, filterCouponsForLines } from '@/lib/coupon-optimizer';
 import { addMarketCartItem, isMarketWishListed, readMarketCartItems, recordMarketBrowseItem, toggleMarketWishItem } from '@/lib/market-cart';
@@ -643,11 +644,7 @@ export default function ProductDetailScreen() {
             {reviews.length ? reviews.slice(0, 3).map((item) => (
               <View key={item.id} style={styles.commentRow}>
                 <View style={styles.avatar}>
-                  {item.userAvatarUrl ? (
-                    <Image source={{ uri: item.userAvatarUrl }} style={styles.avatarImage} contentFit="cover" />
-                  ) : (
-                    <PictureIcon width={18} height={18} color="#C9CDD4" />
-                  )}
+                  <Image source={avatarSource(item.userAvatarUrl)} style={styles.avatarImage} contentFit="cover" />
                 </View>
                 <View style={styles.commentTextWrap}>
                   <View style={styles.commentHeaderRow}>

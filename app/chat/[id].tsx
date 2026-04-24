@@ -16,8 +16,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { resolveMediaUrl } from '@/constants/api';
 import { useAuth } from '@/contexts/auth-context';
+import { avatarSource } from '@/lib/avatar-source';
 import { messageReadKey, writeChatReadMarker } from '@/lib/chat-read-markers';
 import { connectChatSocket } from '@/lib/chat-socket';
 import { createConversation, fetchConversation, fetchFollowStatus, fetchUserInfo, toggleFollow, type ConversationItem } from '@/lib/redbook-api';
@@ -117,10 +117,6 @@ function toChatMessages(history: ConversationItem['historyMessage']) {
       emoji: textType === 'emoji' ? normalizeEmojiChar(item?.text?.message, item?.text?.url) : undefined,
     } as ChatMessage;
   });
-}
-
-function avatarUri(url?: string) {
-  return resolveMediaUrl(String(url || '').replace(/^\.\.\//, ''));
 }
 
 function parseMessageDate(value: unknown) {
@@ -242,8 +238,8 @@ export default function ChatDetailScreen() {
   const emojiAnim = useRef(new Animated.Value(0)).current;
 
   const targetName = peerName;
-  const targetAvatar = avatarUri(peerAvatarPath);
-  const myAvatar = avatarUri(String(user?.url || ''));
+  const targetAvatar = avatarSource(peerAvatarPath);
+  const myAvatar = avatarSource(String(user?.url || ''));
 
   useEffect(() => {
     if (!user?.account || !chatId) return;
@@ -578,11 +574,7 @@ export default function ChatDetailScreen() {
           headerTitleAlign: 'left',
           headerTitle: () => (
             <Pressable style={styles.headerUser} onPress={goTargetProfile}>
-              {targetAvatar ? (
-                <Image source={{ uri: targetAvatar }} style={styles.headerAvatar} contentFit="cover" />
-              ) : (
-                <View style={[styles.headerAvatar, styles.avatarFallback]} />
-              )}
+              <Image source={targetAvatar} style={styles.headerAvatar} contentFit="cover" />
               <ThemedText style={styles.headerName} numberOfLines={1}>{targetName}</ThemedText>
               {user?.account && chatId !== user.account ? (
                 <Pressable
@@ -643,11 +635,7 @@ export default function ChatDetailScreen() {
             const message = item.message;
             return (
               <View key={message.id} style={[styles.msgRow, message.mine ? styles.msgRowMine : styles.msgRowYou]}>
-                {message.mine ? null : targetAvatar ? (
-                  <Image source={{ uri: targetAvatar }} style={styles.avatar} contentFit="cover" />
-                ) : (
-                  <View style={[styles.avatar, styles.avatarFallback]} />
-                )}
+                {message.mine ? null : <Image source={targetAvatar} style={styles.avatar} contentFit="cover" />}
 
                 <View style={[styles.bubble, message.mine ? styles.bubbleMine : styles.bubbleYou]}>
                   {message.type === 'emoji' ? (
@@ -657,11 +645,7 @@ export default function ChatDetailScreen() {
                   )}
                 </View>
 
-                {message.mine ? myAvatar ? (
-                  <Image source={{ uri: myAvatar }} style={styles.avatar} contentFit="cover" />
-                ) : (
-                  <View style={[styles.avatar, styles.avatarFallback]} />
-                ) : null}
+                {message.mine ? <Image source={myAvatar} style={styles.avatar} contentFit="cover" /> : null}
               </View>
             );
           }}
