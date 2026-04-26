@@ -4,7 +4,9 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
+  Text,
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -14,6 +16,7 @@ import { useFeedback } from '@/components/app-feedback';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/auth-context';
+import { getApiBaseUrl } from '@/constants/api';
 import { ApiError } from '@/lib/post-json';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
@@ -30,6 +33,39 @@ function toChineseAuthError(error: unknown, fallback: string) {
   return text;
 }
 
+function formatLoginDebugInfo(error: unknown, account: string) {
+  const now = new Date().toISOString();
+  const lines: string[] = [];
+
+  lines.push(`[${now}] Login failed`);
+  lines.push(`platform=${Platform.OS} dev=${String(__DEV__)}`);
+  lines.push(`apiBase=${getApiBaseUrl()}`);
+  lines.push(`account=${account.trim() || '<empty>'}`);
+
+  if (error instanceof ApiError) {
+    lines.push(`errorType=ApiError`);
+    lines.push(`status=${String(error.status)}`);
+    lines.push(`message=${error.message || '<empty>'}`);
+    if (error.stack) {
+      lines.push(`stack=${error.stack.split('\n').slice(0, 6).join(' | ')}`);
+    }
+    return lines.join('\n');
+  }
+
+  if (error instanceof Error) {
+    lines.push(`errorType=${error.name || 'Error'}`);
+    lines.push(`message=${error.message || '<empty>'}`);
+    if (error.stack) {
+      lines.push(`stack=${error.stack.split('\n').slice(0, 6).join(' | ')}`);
+    }
+    return lines.join('\n');
+  }
+
+  lines.push(`errorType=Unknown`);
+  lines.push(`message=${String(error)}`);
+  return lines.join('\n');
+}
+
 export default function LoginScreen() {
   const router = useRouter();
   const feedback = useFeedback();
@@ -37,6 +73,7 @@ export default function LoginScreen() {
   const [account, setAccount] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
   const inputBg = useThemeColor({ light: '#F2F2F7', dark: '#2C2C2E' }, 'background');
@@ -57,6 +94,7 @@ export default function LoginScreen() {
       router.replace('/profile');
     } catch (e) {
       setError(toChineseAuthError(e, '登录失败'));
+      setDebugLogs((prev) => [formatLoginDebugInfo(e, account), ...prev].slice(0, 30));
     } finally {
       setLoading(false);
     }
@@ -82,6 +120,10 @@ export default function LoginScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.flex}>
         <ThemedView style={styles.inner}>
+          <ThemedView style={[styles.envWrap, { borderColor: border }]}>
+            <ThemedText style={styles.envTitle}>当前 EXPO_PUBLIC_API_URL</ThemedText>
+            <Text style={styles.envValue}>{process.env.EXPO_PUBLIC_API_URL}</Text>
+          </ThemedView>
           <ThemedText style={styles.label}>账号</ThemedText>
           <TextInput
             value={account}
@@ -111,6 +153,21 @@ export default function LoginScreen() {
             <ThemedText style={styles.error} lightColor="#FF3B30" darkColor="#FF453A">
               {error}
             </ThemedText>
+          ) : null}
+          {debugLogs.length ? (
+            <ThemedView style={[styles.debugWrap, { borderColor: border, backgroundColor: inputBg }]}>
+              <ThemedView style={styles.debugHeader}>
+                <ThemedText style={[styles.debugTitle, { color: muted }]}>登录失败调试日志</ThemedText>
+                <Pressable onPress={() => setDebugLogs([])} hitSlop={8}>
+                  <ThemedText style={styles.debugClear}>清空</ThemedText>
+                </Pressable>
+              </ThemedView>
+              <ScrollView style={styles.debugScroll} nestedScrollEnabled>
+                <ThemedText style={styles.debugText}>
+                  {debugLogs.join('\n\n----------------\n\n')}
+                </ThemedText>
+              </ScrollView>
+            </ThemedView>
           ) : null}
           <Pressable
             style={[styles.primaryBtn, { opacity: loading ? 0.6 : 1 }]}
@@ -145,6 +202,24 @@ const styles = StyleSheet.create({
     padding: 24,
     gap: 8,
   },
+  envWrap: {
+    marginBottom: 8,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
+    backgroundColor: '#FFF6F8',
+  },
+  envTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#D81E3A',
+    marginBottom: 4,
+  },
+  envValue: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#D81E3A',
+  },
   label: {
     fontSize: 14,
     fontWeight: '600',
@@ -160,6 +235,35 @@ const styles = StyleSheet.create({
   error: {
     marginTop: 8,
     fontSize: 14,
+  },
+  debugWrap: {
+    marginTop: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    padding: 10,
+    maxHeight: 180,
+  },
+  debugHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  debugTitle: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  debugClear: {
+    fontSize: 11,
+    color: '#FF2442',
+    fontWeight: '600',
+  },
+  debugScroll: {
+    maxHeight: 140,
+  },
+  debugText: {
+    fontSize: 10,
+    lineHeight: 14,
   },
   primaryBtn: {
     marginTop: 20,

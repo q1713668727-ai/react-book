@@ -57,6 +57,15 @@ async function parseEnvelope<T>(res: Response, path: string): Promise<Envelope<T
   return data;
 }
 
+async function requestWithNetworkHint(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Network request failed: ${url} (${message})`);
+  }
+}
+
 function buildQuery(params?: Record<string, unknown>) {
   if (!params) return '';
   const search = new URLSearchParams();
@@ -77,20 +86,20 @@ function buildQuery(params?: Record<string, unknown>) {
 export async function postJson<T = unknown>(path: string, body: unknown): Promise<Envelope<T>> {
   const url = apiUrl(path);
   const headers = await getAuthHeaders(true);
-  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+  const res = await requestWithNetworkHint(url, { method: 'POST', headers, body: JSON.stringify(body) });
   return parseEnvelope<T>(res, path);
 }
 
 export async function postPublicJson<T = unknown>(path: string, body: unknown): Promise<Envelope<T>> {
   const url = apiUrl(path);
   const headers = { 'Content-Type': 'application/json' };
-  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+  const res = await requestWithNetworkHint(url, { method: 'POST', headers, body: JSON.stringify(body) });
   return parseEnvelope<T>(res, path);
 }
 
 export async function getJson<T = unknown>(path: string, params?: Record<string, unknown>): Promise<Envelope<T>> {
   const url = `${apiUrl(path)}${buildQuery(params)}`;
   const headers = await getAuthHeaders(false);
-  const res = await fetch(url, { method: 'GET', headers });
+  const res = await requestWithNetworkHint(url, { method: 'GET', headers });
   return parseEnvelope<T>(res, path);
 }

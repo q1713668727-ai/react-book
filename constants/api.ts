@@ -1,11 +1,29 @@
-/**
- * API 基址：优先 `EXPO_PUBLIC_API_URL`（.env 或构建环境），默认本机 Express。
- * 默认使用局域网地址 `http://192.168.1.4:8000`。
- */
-const raw = (process.env.EXPO_PUBLIC_API_URL ?? 'http://39.104.19.197:3002').replace(/\/$/, '');
+import Constants from 'expo-constants';
+
+const DEFAULT_API_BASE = 'http://39.104.19.197:3002';
+
+function sanitizeBaseUrl(value: unknown): string | undefined {
+  const text = String(value ?? '').trim().replace(/\/$/, '');
+  if (!text) return undefined;
+  if (!/^https?:\/\//i.test(text)) return undefined;
+  return text;
+}
+
+function readConfigBaseUrl(): string | undefined {
+  const fromPublicEnv = sanitizeBaseUrl(process.env.EXPO_PUBLIC_API_URL);
+  if (fromPublicEnv) return fromPublicEnv;
+
+  const extra = (Constants.expoConfig?.extra || {}) as Record<string, unknown>;
+  const fromExtra = sanitizeBaseUrl(extra.apiBaseUrl);
+  if (fromExtra) return fromExtra;
+
+  return undefined;
+}
+
+const apiBaseUrl = readConfigBaseUrl() || DEFAULT_API_BASE;
 
 export function getApiBaseUrl(): string {
-  return raw;
+  return apiBaseUrl;
 }
 
 export function apiUrl(path: string): string {

@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "React Demo",
+    "name": "BlueBook-test",
     "slug": "react-demo",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -8,9 +8,17 @@
     "scheme": "reactdemo",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
+        }
+      }
     },
+
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -18,14 +26,17 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "edgeToEdgeEnabled": true,
+      "usesCleartextTraffic": true,
+      "permissions": ["INTERNET"],
       "predictiveBackGestureEnabled": false,
       "package": "com.anonymous.reactdemo"
     },
+
     "web": {
       "output": "static",
       "favicon": "./assets/images/favicon.png"
     },
+
     "plugins": [
       "expo-router",
       [
@@ -40,17 +51,30 @@
           }
         }
       ],
-      "expo-video"
+      "expo-video",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
     ],
+
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
     },
+
     "extra": {
+      "apiBaseUrl": "http://39.104.19.197:3002",
       "router": {},
       "eas": {
-        "projectId": "f9c457a2-e2cc-4ebf-94b5-9c7c261ce484"
+        "projectId": "d23debc5-9988-48c7-a00e-70615ce4c399"
       }
-    }
+    },
+
+    "owner": "weiyufeng"
   }
 }
