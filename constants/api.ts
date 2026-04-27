@@ -1,7 +1,6 @@
 import Constants from 'expo-constants';
 
 const DEFAULT_API_BASE = 'http://39.104.19.197:3002';
-
 function sanitizeBaseUrl(value: unknown): string | undefined {
   const text = String(value ?? '').trim().replace(/\/$/, '');
   if (!text) return undefined;
@@ -34,7 +33,10 @@ export function apiUrl(path: string): string {
 /** 将后端返回的相对路径（如 user-avatar/xxx.jpg）拼成可请求的 URL */
 export function resolveMediaUrl(relative: string | undefined | null): string | undefined {
   if (relative == null || relative === '') return undefined;
-  if (/^https?:\/\//i.test(relative)) return relative;
-  const p = relative.startsWith('/') ? relative : `/${relative}`;
+  const normalized = String(relative).trim().replace(/^\.\.\//, '');
+  if (!normalized) return undefined;
+  if (/^https?:\/\//i.test(normalized)) return normalized;
+  if (/^\/?public\//i.test(normalized)) return normalized;
+  const p = normalized.startsWith('/') ? normalized : `/${normalized}`;
   return `${getApiBaseUrl()}${p}`;
 }

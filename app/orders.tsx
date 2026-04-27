@@ -3,7 +3,7 @@ import { Image } from 'expo-image';
 import { Stack, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { Modal, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useFeedback } from '@/components/app-feedback';
@@ -64,6 +64,7 @@ export default function OrdersScreen() {
   const [reviewText, setReviewText] = useState('');
   const [reviewRating, setReviewRating] = useState(5);
   const [badgeReadState, setBadgeReadState] = useState<BadgeReadState>({});
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -81,6 +82,15 @@ export default function OrdersScreen() {
     const items = await fetchMarketOrders().catch(() => []);
     setOrders(items);
   }, []);
+
+  const refreshOrders = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadOrders();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadOrders]);
 
   useFocusEffect(
     useCallback(() => {
@@ -301,7 +311,10 @@ export default function OrdersScreen() {
           </ScrollView>
         </View>
 
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.listContent}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.listContent}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refreshOrders()} />}>
           {visibleOrders.length ? visibleOrders.map((order) => (
             <OrderCard
               key={order.id}

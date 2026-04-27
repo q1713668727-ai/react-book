@@ -1,7 +1,7 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
-import { Animated, Modal, NativeScrollEvent, NativeSyntheticEvent, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
+import { Animated, Modal, NativeScrollEvent, NativeSyntheticEvent, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -103,6 +103,7 @@ export default function ProductDetailScreen() {
   const [addressItems, setAddressItems] = useState<AddressItem[]>([]);
   const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null);
   const [defaultAddress, setDefaultAddress] = useState<AddressItem | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const sectionY = useRef<Record<ProductSection, number>>({ 商品: 0, 评价: 0, 详情: 0 });
   const params = useLocalSearchParams<{ id?: string; name?: string; price?: string; sold?: string; openCoupon?: string; openCart?: string }>();
   const [product, setProduct] = useState<MarketProduct | null>(null);
@@ -402,6 +403,42 @@ export default function ProductDetailScreen() {
     }
   }
 
+  const refreshPage = useCallback(async () => {
+    if (!params.id) return;
+    setRefreshing(true);
+    try {
+      const nextProduct = await fetchMarketProduct(params.id).catch(() => null);
+      if (nextProduct) {
+        setProduct(nextProduct);
+        void recordMarketBrowseItem(nextProduct);
+        const [nextReviews, nextRecommendProducts, nextMarketCoupons, nextWishListed] = await Promise.all([
+          fetchMarketProductReviews(params.id).catch(() => []),
+          fetchMarketProducts({ limit: 50 }).catch(() => []),
+          fetchMarketCoupons({ productId: nextProduct.id, shopId: nextProduct.shopId || undefined }).catch(() => []),
+          isMarketWishListed(nextProduct.id).catch(() => false),
+        ]);
+        setReviews(nextReviews);
+        setRecommendProducts(pickRandomProducts(nextRecommendProducts, nextProduct.id));
+        setMarketCoupons(nextMarketCoupons);
+        setWishListed(nextWishListed);
+      } else {
+        setReviews([]);
+        setMarketCoupons([]);
+      }
+
+      if (user?.account) {
+        const nextClaimedCoupons = await fetchMyMarketCoupons().catch(() => []);
+        setClaimedCoupons(nextClaimedCoupons);
+        setReceivedCouponIds(nextClaimedCoupons.map((item) => item.id));
+      } else {
+        setClaimedCoupons([]);
+        setReceivedCouponIds([]);
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }, [params.id, user?.account]);
+
   useEffect(() => {
     if (!params.id) return;
     let alive = true;
@@ -559,6 +596,7 @@ export default function ProductDetailScreen() {
           ref={scrollRef}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.content}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refreshPage()} />}
           scrollEventThrottle={16}
           onScroll={Animated.event(
             [{ nativeEvent: { contentOffset: { y: scrollY } } }],

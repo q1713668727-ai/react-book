@@ -176,6 +176,7 @@ export default function FindScreen() {
   const [pendingFeedIds, setPendingFeedIds] = useState<string[]>([]);
   const [videoThumbs, setVideoThumbs] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState<string[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
   const thumbPendingRef = useRef<Set<string>>(new Set());
   const routeSearchRef = useRef('');
 
@@ -380,6 +381,21 @@ export default function FindScreen() {
     executeSearch(key, activeType, limit);
   }
 
+  const refreshSearch = useCallback(async () => {
+    const key = submittedKeyword.trim() || keyword.trim();
+    if (!key) return;
+    setRefreshing(true);
+    try {
+      if (activeType === 'user') {
+        await loadUsers({ key, limit: 10, offset: 0, reset: true, manual: true });
+      } else if (activeType === 'image' || activeType === 'video') {
+        await loadContent({ key, type: activeType, limit: 10, offset: 0, reset: true });
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }, [activeType, keyword, loadContent, loadUsers, submittedKeyword]);
+
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <Stack.Screen options={{ headerShown: false }} />
@@ -447,6 +463,8 @@ export default function FindScreen() {
             numColumns={2}
             columnWrapperStyle={styles.columnWrap}
             contentContainerStyle={styles.feedList}
+            refreshing={refreshing}
+            onRefresh={() => void refreshSearch()}
             ListEmptyComponent={
               <View style={styles.emptyState}>
                 {loading ? <AppActivityIndicator label="正在搜索" /> : <ThemedText style={styles.muted}>{error || activeSearchType.empty}</ThemedText>}
@@ -518,6 +536,8 @@ export default function FindScreen() {
             data={list}
             keyExtractor={(item, index) => `${item.account}-${index}`}
             contentContainerStyle={styles.list}
+            refreshing={refreshing}
+            onRefresh={() => void refreshSearch()}
             ListEmptyComponent={
               <View style={styles.emptyState}>
                 {loading ? <AppActivityIndicator label="正在搜索" /> : <ThemedText style={styles.muted}>{error || activeSearchType.empty}</ThemedText>}

@@ -27,25 +27,24 @@ export default function ProductHistorySearchScreen() {
   const [items, setItems] = useState<MarketBrowseItem[]>([]);
   const [keyword, setKeyword] = useState('');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadItems = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
+    try {
+      setItems(await readMarketBrowseItems());
+    } finally {
+      if (isRefresh) setRefreshing(false);
+      else setLoading(false);
+      setTimeout(() => inputRef.current?.focus(), 80);
+    }
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
-      let alive = true;
-      setLoading(true);
-      readMarketBrowseItems()
-        .then((next) => {
-          if (alive) setItems(next);
-        })
-        .finally(() => {
-          if (alive) {
-            setLoading(false);
-            setTimeout(() => inputRef.current?.focus(), 80);
-          }
-        });
-      return () => {
-        alive = false;
-      };
-    }, []),
+      void loadItems();
+    }, [loadItems]),
   );
 
   const results = useMemo(() => items.filter((item) => matchItem(item, keyword)), [items, keyword]);
@@ -89,6 +88,8 @@ export default function ProductHistorySearchScreen() {
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.list}
+            refreshing={refreshing}
+            onRefresh={() => void loadItems(true)}
             ListEmptyComponent={
               <View style={styles.empty}>
                 <ThemedText style={styles.emptyText}>没有找到相关足迹</ThemedText>

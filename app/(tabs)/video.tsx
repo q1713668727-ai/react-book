@@ -1,7 +1,9 @@
 import { Image } from 'expo-image';
+import { createVideoPlayer, VideoView, type VideoPlayer } from 'expo-video';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ComponentType } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import { Feather } from '@expo/vector-icons';
+import { runOnJS } from 'react-native-reanimated';
 import {
   Animated,
   FlatList,
@@ -14,6 +16,7 @@ import {
   View,
   type ViewToken,
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppActivityIndicator } from '@/components/app-loading';
@@ -34,43 +37,31 @@ import LikedIcon from '@/public/icon/xihuan.svg';
 import UnlikedIcon from '@/public/icon/xihuan_1.svg';
 import MoreIcon from '@/public/icon/gengduo.svg';
 
-type AVPlaybackStatus = {
-  isLoaded: boolean;
-  durationMillis?: number;
-  positionMillis?: number;
-};
-
-type ExpoAvVideoRef = {
-  playAsync?: () => Promise<unknown>;
-  pauseAsync?: () => Promise<unknown>;
-};
-
-type ExpoAvModule = {
-  Video: ComponentType<any>;
-  ResizeMode: { COVER?: string };
-};
-
-let expoAvModule: ExpoAvModule | null = null;
-try {
-  // expo-av is removed from Expo Go in newer SDKs.
-  // Keep a safe runtime fallback to prevent route crash.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  expoAvModule = require('expo-av') as ExpoAvModule;
-} catch {
-  expoAvModule = null;
+function safelyPause(ref: VideoPlayer | null | undefined) {
+  ref?.pause();
 }
 
-const VideoComponent = expoAvModule?.Video || null;
-const ResizeModeCover = expoAvModule?.ResizeMode?.COVER || 'cover';
-
-function safelyPause(ref: ExpoAvVideoRef | null | undefined) {
-  if (!ref?.pauseAsync) return;
-  void ref.pauseAsync().catch(() => undefined);
+function safelyPlay(ref: VideoPlayer | null | undefined) {
+  ref?.play();
 }
 
-function safelyPlay(ref: ExpoAvVideoRef | null | undefined) {
-  if (!ref?.playAsync) return;
-  void ref.playAsync().catch(() => undefined);
+function VideoTapOverlay({ onPress }: { onPress: () => void }) {
+  const tapGesture = useMemo(
+    () =>
+      Gesture.Tap()
+        .maxDuration(220)
+        .maxDistance(12)
+        .onEnd((_event, success) => {
+          if (success) runOnJS(onPress)();
+        }),
+    [onPress]
+  );
+
+  return (
+    <GestureDetector gesture={tapGesture}>
+      <View style={styles.videoTapLayer} />
+    </GestureDetector>
+  );
 }
 
 type VideoDto = {
@@ -307,12 +298,42 @@ export default function VideoScreen() {
   const [deletePromptVisible, setDeletePromptVisible] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(false);
 
-  const videoRefs = useRef<Record<string, ExpoAvVideoRef | null>>({});
+  const videoRefs = useRef<Record<string, VideoPlayer | null>>({});
+  const videoSubscriptions = useRef<Record<string, { remove: () => void }[]>>({});
   const listRef = useRef<FlatList<VideoFeedItem> | null>(null);
   const commentInputRef = useRef<TextInput | null>(null);
   const pausedIdsRef = useRef<Set<string>>(new Set());
   const settingsTranslateY = useRef(new Animated.Value(280)).current;
   const targetId = Array.isArray(params.id) ? params.id[0] : params.id;
+
+  const updatePlaybackStatus = useCallback((id: string, positionMillis: number, durationMillis: number) => {
+    setPlaybackMap((prev) => {
+      const current = prev[id];
+      if (current?.durationMillis === durationMillis && Math.abs((current.positionMillis || 0) - positionMillis) < 250) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [id]: {
+          durationMillis,
+          positionMillis,
+        },
+      };
+    });
+  }, []);
+
+  const releaseVideoPlayer = useCallback((id: string) => {
+    const subscriptions = videoSubscriptions.current[id] || [];
+    subscriptions.forEach((subscription) => subscription.remove());
+    delete videoSubscriptions.current[id];
+
+    const player = videoRefs.current[id];
+    if (player) {
+      safelyPause(player);
+      player.release();
+    }
+    delete videoRefs.current[id];
+  }, []);
 
   const pauseAllVideos = useCallback(() => {
     Object.values(videoRefs.current).forEach((ref) => {
@@ -481,26 +502,6 @@ export default function VideoScreen() {
     else safelyPlay(ref);
   }
 
-  function updatePlaybackStatus(id: string, status: AVPlaybackStatus) {
-    if (!status.isLoaded) return;
-
-    const durationMillis = status.durationMillis || 0;
-    const positionMillis = status.positionMillis || 0;
-    setPlaybackMap((prev) => {
-      const current = prev[id];
-      if (current?.durationMillis === durationMillis && Math.abs(current.positionMillis - positionMillis) < 250) {
-        return prev;
-      }
-      return {
-        ...prev,
-        [id]: {
-          durationMillis,
-          positionMillis,
-        },
-      };
-    });
-  }
-
   async function toggleLike() {
     if (!current || pendingLike) return;
     if (!user?.account) {
@@ -535,6 +536,53 @@ export default function VideoScreen() {
       setPendingLike(false);
     }
   }
+
+  useEffect(() => {
+    const nextIds = new Set(items.map((item) => item.id));
+
+    items.forEach((item) => {
+      if (!item.videoUri || videoRefs.current[item.id]) return;
+
+      const player = createVideoPlayer({ uri: item.videoUri });
+      player.loop = true;
+      player.muted = false;
+      player.timeUpdateEventInterval = 0.25;
+
+      const timeUpdateSub = player.addListener('timeUpdate', ({ currentTime }) => {
+        updatePlaybackStatus(item.id, Math.round(currentTime * 1000), Math.round((player.duration || 0) * 1000));
+      });
+      const statusChangeSub = player.addListener('statusChange', () => {
+        updatePlaybackStatus(item.id, Math.round((player.currentTime || 0) * 1000), Math.round((player.duration || 0) * 1000));
+      });
+
+      videoRefs.current[item.id] = player;
+      videoSubscriptions.current[item.id] = [timeUpdateSub, statusChangeSub];
+
+      if (item.id === items[activeIndex]?.id && !pausedIdsRef.current.has(item.id)) {
+        safelyPlay(player);
+      }
+    });
+
+    Object.keys(videoRefs.current).forEach((id) => {
+      if (nextIds.has(id)) return;
+      releaseVideoPlayer(id);
+      setPlaybackMap((prev) => {
+        if (!(id in prev)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    });
+  }, [activeIndex, items, releaseVideoPlayer, updatePlaybackStatus]);
+
+  useEffect(() => {
+    const currentPlayers = videoRefs.current;
+    return () => {
+      Object.keys(currentPlayers).forEach((id) => {
+        releaseVideoPlayer(id);
+      });
+    };
+  }, [releaseVideoPlayer]);
 
   async function toggleCollect() {
     if (!current || pendingCollect) return;
@@ -842,38 +890,32 @@ export default function VideoScreen() {
                   : 0;
               return (
                 <View style={[styles.page, { height: pageHeight }]}>
-                  <Pressable style={styles.videoTapLayer} onPress={() => togglePlayback(item)}>
+                  <View style={styles.videoSurface}>
                     {item.videoUri ? (
-                      VideoComponent ? (
-                      <VideoComponent
-                        ref={(ref: ExpoAvVideoRef | null) => {
-                          videoRefs.current[item.id] = ref;
-                        }}
-                        source={{ uri: item.videoUri }}
-                        style={styles.video}
-                        resizeMode={ResizeModeCover}
-                        isLooping
-                        shouldPlay={isActive && !paused}
-                        isMuted={false}
-                        progressUpdateIntervalMillis={250}
-                        onPlaybackStatusUpdate={(status: AVPlaybackStatus) => updatePlaybackStatus(item.id, status)}
-                      />
+                      videoRefs.current[item.id] ? (
+                        <VideoView
+                          player={videoRefs.current[item.id] || undefined}
+                          style={styles.video}
+                          contentFit="cover"
+                          nativeControls={false}
+                        />
+                      ) : item.coverUri ? (
+                        <Image source={{ uri: item.coverUri }} style={styles.video} contentFit="cover" />
                       ) : (
-                        <View style={[styles.video, styles.videoFallback]}>
-                          <ThemedText style={styles.muted}>当前环境不支持该视频模块</ThemedText>
-                        </View>
+                        <View style={[styles.video, styles.videoFallback]} />
                       )
                     ) : item.coverUri ? (
                       <Image source={{ uri: item.coverUri }} style={styles.video} contentFit="cover" />
                     ) : (
                       <View style={[styles.video, styles.videoFallback]} />
                     )}
+                    <VideoTapOverlay onPress={() => togglePlayback(item)} />
                     {paused ? (
-                      <View style={styles.centerPlay}>
+                      <View pointerEvents="none" style={styles.centerPlay}>
                         <ThemedText style={styles.centerPlayText}>▶</ThemedText>
                       </View>
                     ) : null}
-                  </Pressable>
+                  </View>
 
                   <View style={[styles.topOverlay, { top: insets.top + 4, height: 30 }]}>
                     <Pressable style={styles.topBtn} onPress={() => (router.canGoBack() ? router.back() : router.push('/'))}>
@@ -1093,6 +1135,7 @@ const styles = StyleSheet.create({
   retryBtn: { borderWidth: 1, borderColor: '#444', borderRadius: 18, paddingHorizontal: 16, paddingVertical: 8 },
   retryText: { color: '#EDEEF2' },
   page: { backgroundColor: '#000' },
+  videoSurface: { flex: 1 },
   videoTapLayer: { ...StyleSheet.absoluteFillObject },
   video: { width: '100%', height: '100%' },
   videoFallback: { backgroundColor: '#1D1F24' },
@@ -1100,16 +1143,17 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: '50%',
     top: '50%',
-    width: 72,
-    height: 72,
-    marginLeft: -36,
-    marginTop: -36,
-    borderRadius: 36,
-    backgroundColor: 'rgba(255,255,255,0.34)',
+    width: 52,
+    height: 52,
+    marginLeft: -26,
+    marginTop: -26,
+    borderRadius: 26,
+    backgroundColor: 'rgba(14,16,22,0.68)',
     alignItems: 'center',
     justifyContent: 'center',
+    zIndex: 1,
   },
-  centerPlayText: { color: 'rgba(255,255,255,0.86)', fontSize: 34, marginLeft: 5, lineHeight: 42 },
+  centerPlayText: { color: '#FFF', fontSize: 22, marginLeft: 3, lineHeight: 24 },
   topOverlay: {
     position: 'absolute',
     left: 0,
@@ -1118,6 +1162,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    zIndex: 2,
   },
   topRight: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   topBtn: { minWidth: 32, height: 30, alignItems: 'center', justifyContent: 'center' },
@@ -1127,6 +1172,7 @@ const styles = StyleSheet.create({
     right: 0,
     paddingHorizontal: 14,
     paddingTop: 18,
+    zIndex: 2,
   },
   authorRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 },
   avatar: { width: 32, height: 32, borderRadius: 16 },

@@ -1,7 +1,7 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, Share, StyleSheet, TextInput, View } from 'react-native';
+import { Modal, Pressable, RefreshControl, ScrollView, Share, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useFeedback } from '@/components/app-feedback';
@@ -120,10 +120,20 @@ export default function AddressListScreen() {
   const [selectedProvince, setSelectedProvince] = useState<RegionProvince | null>(null);
   const [selectedCity, setSelectedCity] = useState<RegionProvince['cities'][number] | null>(null);
   const [selectedDistrict, setSelectedDistrict] = useState<RegionProvince['cities'][number]['districts'][number] | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const refresh = useCallback(async () => {
     setAddresses(await readAddressItems());
   }, []);
+
+  const refreshAddresses = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refresh]);
 
   useEffect(() => {
     void refresh();
@@ -271,7 +281,10 @@ export default function AddressListScreen() {
           <View style={styles.headerSpace} />
         </View>
 
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.content}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refreshAddresses()} />}>
           {addresses.length ? (
             addresses.map((item) => (
               <Pressable key={item.id} style={[styles.addressBlock, pickOrderAddressMode && styles.addressBlockPick]} onPress={() => void pickOrderAddress(item)}>

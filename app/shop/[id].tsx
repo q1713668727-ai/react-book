@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -53,30 +53,47 @@ export default function ShopDetailScreen() {
   const [searchKeyword, setSearchKeyword] = useState('');
   const [searching, setSearching] = useState(false);
   const [searchedProducts, setSearchedProducts] = useState<MarketProduct[] | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const shopName = shop?.name || String(params.name || '店铺');
   const debouncedKeyword = useDebouncedText(searchKeyword.trim());
 
-  useEffect(() => {
+  const loadSearchedProducts = useCallback(async (keyword: string) => {
+    const shopId = Number(params.id || shop?.id || 0);
+    if (!shopId || !keyword) {
+      setSearchedProducts(null);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    try {
+      const items = await fetchMarketProducts({ shopId, keyword, limit: 100 });
+      setSearchedProducts(items);
+    } catch {
+      setSearchedProducts([]);
+    } finally {
+      setSearching(false);
+    }
+  }, [params.id, shop?.id]);
+
+  const loadShop = useCallback(async (isRefresh = false) => {
     if (!params.id) return;
-    let alive = true;
-    setLoading(true);
-    fetchMarketShop(params.id)
-      .then((data) => {
-        if (!alive) return;
-        if (data) setShop(data);
-        setErrorText('');
-      })
-      .catch((error: Error) => {
-        if (!alive) return;
-        setErrorText(error.message || '店铺加载失败');
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
+    try {
+      const data = await fetchMarketShop(params.id);
+      if (data) setShop(data);
+      setErrorText('');
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message || '店铺加载失败' : '店铺加载失败');
+    } finally {
+      if (isRefresh) setRefreshing(false);
+      else setLoading(false);
+    }
   }, [params.id]);
+
+  useEffect(() => {
+    void loadShop();
+  }, [loadShop]);
 
   useEffect(() => {
     const shopId = Number(params.id || shop?.id || 0);
@@ -85,23 +102,8 @@ export default function ShopDetailScreen() {
       setSearching(false);
       return;
     }
-    let cancelled = false;
-    setSearching(true);
-    fetchMarketProducts({ shopId, keyword: debouncedKeyword, limit: 100 })
-      .then((items) => {
-        if (!cancelled) setSearchedProducts(items);
-      })
-      .catch(() => {
-        if (!cancelled) setSearchedProducts([]);
-      })
-      .finally(() => {
-        if (!cancelled) setSearching(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [debouncedKeyword, params.id, shop?.id]);
+    void loadSearchedProducts(debouncedKeyword);
+  }, [debouncedKeyword, loadSearchedProducts, params.id, shop?.id]);
 
   const sourceProducts = useMemo<MarketProduct[]>(() => {
     if (!debouncedKeyword) return shop?.products || [];
@@ -234,6 +236,11 @@ export default function ShopDetailScreen() {
             data={sortedProducts}
             keyExtractor={(item) => String(item.id)}
             numColumns={2}
+            refreshing={refreshing}
+            onRefresh={() => void (async () => {
+              await loadShop(true);
+              if (debouncedKeyword) await loadSearchedProducts(debouncedKeyword);
+            })()}
             columnWrapperStyle={styles.productColumns}
             contentContainerStyle={styles.productList}
             showsVerticalScrollIndicator={false}

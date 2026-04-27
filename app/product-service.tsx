@@ -193,6 +193,7 @@ export default function ProductServiceScreen() {
   const [session, setSession] = useState<MarketServiceSession | null>(null);
   const [messages, setMessages] = useState<MarketServiceMessage[]>([]);
   const [inputText, setInputText] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
   const [emojiMounted, setEmojiMounted] = useState(false);
   const [showQuickSendCard, setShowQuickSendCard] = useState(true);
@@ -267,6 +268,15 @@ export default function ProductServiceScreen() {
       if (!options?.silent) feedback.toast(error instanceof Error ? error.message : '客服会话加载失败');
     }
   }, [applySessionData, feedback, params.productId, params.shopId]);
+
+  const refreshSession = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadSession();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadSession]);
 
   useEffect(() => {
     void loadSession();
@@ -494,6 +504,8 @@ export default function ProductServiceScreen() {
           style={[styles.chatList, { marginBottom: composerHeight }]}
           data={displayMessages}
           keyExtractor={(item) => item.id}
+          refreshing={refreshing}
+          onRefresh={() => void refreshSession()}
           keyboardShouldPersistTaps="handled"
           onContentSizeChange={() => scrollToBottom(true)}
           contentContainerStyle={[

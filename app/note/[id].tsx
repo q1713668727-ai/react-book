@@ -9,6 +9,7 @@ import {
   Keyboard,
   Modal,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   TextInput,
@@ -852,7 +853,10 @@ export default function NoteDetailScreen() {
         }}
       />
       <ThemedView style={styles.root}>
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void loadDetail(true)} />}>
           {loading ? (
             <View style={styles.stateBlock}>
               <AppActivityIndicator label="正在加载笔记" />

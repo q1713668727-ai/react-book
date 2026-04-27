@@ -110,6 +110,7 @@ export default function ProductHistoryScreen() {
   const feedback = useFeedback();
   const [items, setItems] = useState<MarketBrowseItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [calendarVisible, setCalendarVisible] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(startOfMonth(Date.now()));
   const [selectedDay, setSelectedDay] = useState(startOfDay(Date.now()));
@@ -117,12 +118,14 @@ export default function ProductHistoryScreen() {
   const [manageMode, setManageMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     try {
       setItems(await readMarketBrowseItems());
     } finally {
-      setLoading(false);
+      if (isRefresh) setRefreshing(false);
+      else setLoading(false);
     }
   }, []);
 
@@ -262,6 +265,8 @@ export default function ProductHistoryScreen() {
             keyExtractor={(item) => item.key}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={[styles.list, manageMode && styles.listManage]}
+            refreshing={refreshing}
+            onRefresh={() => void load(true)}
             renderItem={({ item }) => {
               if (item.type === 'header') {
                 return (

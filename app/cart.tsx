@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
-import { Animated, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Animated, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect } from 'react';
@@ -67,6 +67,7 @@ export default function CartScreen() {
   const [wishItems, setWishItems] = useState<MarketWishItem[]>([]);
   const [recommendProducts, setRecommendProducts] = useState<MarketProduct[]>([]);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
   const isCart = mode === 'cart';
   const allSelected = cartItems.length > 0 && cartItems.every((item) => selectedKeys.includes(item.key));
   const total = useMemo(
@@ -98,6 +99,15 @@ export default function CartScreen() {
     setWishItems(wish);
     setRecommendProducts(shuffleProducts(products.filter((item) => !usedIds.has(String(item.id)))));
   }, []);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refresh]);
 
   function toggleItem(key: string) {
     setSelectedKeys((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
@@ -185,7 +195,10 @@ export default function CartScreen() {
           </View>
         </View>
 
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.scrollContent}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void handleRefresh()} />}>
           {isCart ? (
             <CartContent
               router={router}

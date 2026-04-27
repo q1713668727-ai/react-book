@@ -1,5 +1,9 @@
 import { getJson, postJson } from '@/lib/post-json';
-import { resolveMediaUrl } from '@/constants/api';
+
+const MARKET_ROOT_BASE = 'http://39.104.19.197:3001';
+const MARKET_PRODUCT_IMAGE_BASE = `${MARKET_ROOT_BASE}/uploads/product-images`;
+const MARKET_SHOP_AVATAR_BASE = `${MARKET_ROOT_BASE}/uploads/shop-avatars`;
+const MARKET_CATEGORY_ICON_BASE = `${MARKET_ROOT_BASE}/uploads/category-icons`;
 
 export type MarketProduct = {
   id: number;
@@ -210,26 +214,57 @@ export type MarketServiceSession = {
   messages: MarketServiceMessage[];
 };
 
-function normalizeMarketAssetUrl(url: string | undefined | null) {
+function trimAssetPath(url: string | undefined | null) {
   const value = String(url || '').trim();
   if (!value) return '';
-  const uploadMatch = value.match(/(?:https?:\/\/[^/]+)?\/uploads\/(.+)$/i);
-  if (uploadMatch?.[1]) return resolveMediaUrl(`/market-uploads/${uploadMatch[1]}`) || '';
-  const marketUploadMatch = value.match(/(?:https?:\/\/[^/]+)?\/market-uploads\/(.+)$/i);
-  if (marketUploadMatch?.[1]) return resolveMediaUrl(`/market-uploads/${marketUploadMatch[1]}`) || '';
-  return resolveMediaUrl(value) || value;
+  if (/^https?:\/\//i.test(value)) return value;
+  if (/^\/?public\//i.test(value)) return value;
+  return value.replace(/^\.\.\//, '').replace(/^\/+/, '');
+}
+
+function buildAssetUrl(base: string, url: string | undefined | null, prefixes: RegExp[] = []) {
+  const value = trimAssetPath(url);
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value) || /^\/?public\//i.test(value)) return value;
+
+  let mediaPath = value;
+  prefixes.forEach((pattern) => {
+    mediaPath = mediaPath.replace(pattern, '');
+  });
+  mediaPath = mediaPath.replace(/^\/+/, '');
+
+  return mediaPath ? `${base}/${mediaPath}` : '';
+}
+
+function normalizeMarketProductImage(url: string | undefined | null) {
+  return buildAssetUrl(MARKET_PRODUCT_IMAGE_BASE, url, [/^uploads\/product-images\/+/i, /^uploads\/+/i]);
+}
+
+function normalizeMarketShopAvatar(url: string | undefined | null) {
+  return buildAssetUrl(MARKET_SHOP_AVATAR_BASE, url, [/^uploads\/shop-avatars\/+/i, /^uploads\/+/i]);
+}
+
+function normalizeMarketCategoryIcon(url: string | undefined | null) {
+  return buildAssetUrl(MARKET_CATEGORY_ICON_BASE, url, [/^uploads\/category-icons\/+/i, /^uploads\/+/i]);
+}
+
+function normalizeMarketRootAsset(url: string | undefined | null) {
+  const value = trimAssetPath(url);
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value) || /^\/?public\//i.test(value)) return value;
+  return `${MARKET_ROOT_BASE}/${value}`;
 }
 
 function normalizeProduct(product: MarketProduct): MarketProduct {
   return {
     ...product,
-    shopAvatarUrl: normalizeMarketAssetUrl(product.shopAvatarUrl),
-    imageUrl: normalizeMarketAssetUrl(product.imageUrl),
-    imageUrls: (product.imageUrls || []).map(normalizeMarketAssetUrl).filter(Boolean),
-    hdImageUrls: (product.hdImageUrls || []).map(normalizeMarketAssetUrl).filter(Boolean),
+    shopAvatarUrl: normalizeMarketShopAvatar(product.shopAvatarUrl),
+    imageUrl: normalizeMarketProductImage(product.imageUrl),
+    imageUrls: (product.imageUrls || []).map(normalizeMarketProductImage).filter(Boolean),
+    hdImageUrls: (product.hdImageUrls || []).map(normalizeMarketProductImage).filter(Boolean),
     skus: (product.skus || []).map((sku) => ({
       ...sku,
-      imageUrl: normalizeMarketAssetUrl(sku.imageUrl),
+      imageUrl: normalizeMarketProductImage(sku.imageUrl),
     })),
   };
 }
@@ -237,10 +272,10 @@ function normalizeProduct(product: MarketProduct): MarketProduct {
 function normalizeCategory(category: MarketCategory): MarketCategory {
   return {
     ...category,
-    iconUrl: normalizeMarketAssetUrl(category.iconUrl),
+    iconUrl: normalizeMarketCategoryIcon(category.iconUrl),
     children: (category.children || []).map((child) => ({
       ...child,
-      iconUrl: normalizeMarketAssetUrl(child.iconUrl),
+      iconUrl: normalizeMarketCategoryIcon(child.iconUrl),
     })),
   };
 }
@@ -248,7 +283,7 @@ function normalizeCategory(category: MarketCategory): MarketCategory {
 function normalizeShop(shop: MarketShop): MarketShop {
   return {
     ...shop,
-    avatarUrl: normalizeMarketAssetUrl(shop.avatarUrl),
+    avatarUrl: normalizeMarketShopAvatar(shop.avatarUrl),
     products: (shop.products || []).map(normalizeProduct),
   };
 }
@@ -277,7 +312,7 @@ export async function fetchMarketCategoryChildren(id: number | string) {
   return Array.isArray(result)
     ? result.map((child) => ({
         ...child,
-        iconUrl: normalizeMarketAssetUrl(child.iconUrl),
+        iconUrl: normalizeMarketCategoryIcon(child.iconUrl),
       }))
     : [];
 }
@@ -292,7 +327,7 @@ export async function fetchMarketProductReviews(id: number | string) {
   return Array.isArray(result)
     ? result.map((item) => ({
         ...item,
-        userAvatarUrl: normalizeMarketAssetUrl(item.userAvatarUrl),
+        userAvatarUrl: normalizeMarketRootAsset(item.userAvatarUrl),
       }))
     : [];
 }
@@ -309,7 +344,7 @@ export async function fetchMarketCoupons(params: { productId?: number | string; 
 
 export async function fetchMyMarketCoupons() {
   const { result } = await getJson<MyMarketCoupon[]>('/market/my-coupons');
-  return Array.isArray(result) ? result.map((item) => ({ ...item, shopAvatarUrl: normalizeMarketAssetUrl(item.shopAvatarUrl) })) : [];
+  return Array.isArray(result) ? result.map((item) => ({ ...item, shopAvatarUrl: normalizeMarketShopAvatar(item.shopAvatarUrl) })) : [];
 }
 
 export async function receiveMarketCoupon(couponId: number | string) {
@@ -322,11 +357,11 @@ export async function fetchMarketOrders() {
   return Array.isArray(result)
     ? result.map((order) => ({
         ...order,
-        shopAvatarUrl: normalizeMarketAssetUrl(order.shopAvatarUrl),
+        shopAvatarUrl: normalizeMarketShopAvatar(order.shopAvatarUrl),
         items: (order.items || []).map((item) => ({
           ...item,
-          imageUrl: normalizeMarketAssetUrl(item.imageUrl),
-          shopAvatarUrl: normalizeMarketAssetUrl(item.shopAvatarUrl),
+          imageUrl: normalizeMarketProductImage(item.imageUrl),
+          shopAvatarUrl: normalizeMarketShopAvatar(item.shopAvatarUrl),
         })),
       }))
     : [];
@@ -411,14 +446,14 @@ export async function reviewMarketOrder(order: Pick<MarketOrder, 'id' | 'orderNo
 function normalizeServiceSession(session: MarketServiceSession): MarketServiceSession {
   return {
     ...session,
-    shopAvatarUrl: normalizeMarketAssetUrl(session.shopAvatarUrl),
-    productImageUrl: normalizeMarketAssetUrl(session.productImageUrl),
+    shopAvatarUrl: normalizeMarketRootAsset(session.shopAvatarUrl),
+    productImageUrl: normalizeMarketRootAsset(session.productImageUrl),
     messages: (session.messages || []).map((message) => ({
       ...message,
       payload: message.payload
         ? {
             ...message.payload,
-            imageUrl: normalizeMarketAssetUrl(message.payload.imageUrl),
+            imageUrl: normalizeMarketRootAsset(message.payload.imageUrl),
           }
         : null,
     })),
@@ -455,7 +490,7 @@ export async function sendMarketServiceMessage(
         payload: result.payload
           ? {
               ...result.payload,
-              imageUrl: normalizeMarketAssetUrl(result.payload.imageUrl),
+              imageUrl: normalizeMarketRootAsset(result.payload.imageUrl),
             }
           : null,
       }

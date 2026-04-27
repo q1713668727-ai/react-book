@@ -133,6 +133,7 @@ export default function UserProfileScreen() {
   const [pendingIds, setPendingIds] = useState<string[]>([]);
   const [followed, setFollowed] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [followLoading, setFollowLoading] = useState(false);
   const [videoThumbs, setVideoThumbs] = useState<Record<string, string>>({});
   const thumbPendingRef = useRef<Set<string>>(new Set());
@@ -160,6 +161,15 @@ export default function UserProfileScreen() {
       setLoading(false);
     }
   }, [account, isSelf, user?.account]);
+
+  const refreshAll = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadAll();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadAll]);
 
   useEffect(() => {
     void loadAll();
@@ -325,6 +335,8 @@ export default function UserProfileScreen() {
             data={posts}
             keyExtractor={(item, index) => `${item.id}-${index}`}
             numColumns={2}
+            refreshing={refreshing}
+            onRefresh={() => void refreshAll()}
             columnWrapperStyle={styles.column}
             contentContainerStyle={styles.listContent}
             ListHeaderComponent={

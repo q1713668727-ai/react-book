@@ -3,7 +3,7 @@ import { Image } from 'expo-image';
 import { Stack, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useFeedback } from '@/components/app-feedback';
@@ -36,6 +36,7 @@ export default function ProductServiceListScreen() {
   const feedback = useFeedback();
   const [sessions, setSessions] = useState<MarketServiceSession[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -52,6 +53,15 @@ export default function ProductServiceListScreen() {
       if (!options?.silent) setLoading(false);
     }
   }, [feedback]);
+
+  const refreshSessions = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadSessions();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadSessions]);
 
   useFocusEffect(
     useCallback(() => {
@@ -124,7 +134,10 @@ export default function ProductServiceListScreen() {
           </Pressable>
         </View>
 
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.content}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refreshSessions()} />}>
           {rows.length ? (
             rows.map(({ session, lastMessage }) => (
               <Pressable

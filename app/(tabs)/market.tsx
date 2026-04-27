@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { Stack, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -53,30 +53,29 @@ export default function MarketScreen() {
   const [products, setProducts] = useState<MarketProduct[]>([]);
   const [activeKey, setActiveKey] = useState('');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [errorText, setErrorText] = useState('');
 
-  useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    fetchMarketHome()
-      .then((data) => {
-        if (!alive) return;
-        setCategories(data.categories);
-        setProducts(data.products);
-        setActiveKey((current) => current || data.categories[0]?.key || '');
-        setErrorText('');
-      })
-      .catch((error: Error) => {
-        if (!alive) return;
-        setErrorText(error.message || '集市加载失败');
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
+  const loadData = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
+    try {
+      const data = await fetchMarketHome();
+      setCategories(data.categories);
+      setProducts(data.products);
+      setActiveKey((current) => current || data.categories[0]?.key || '');
+      setErrorText('');
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message || '集市加载失败' : '集市加载失败');
+    } finally {
+      if (isRefresh) setRefreshing(false);
+      else setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
 
   const activeCategory = categories.find((item) => item.key === activeKey) ?? categories[0];
   const shortcuts = useMemo<MarketShortcut[]>(() => {
@@ -190,6 +189,8 @@ export default function MarketScreen() {
             data={visibleProducts}
             keyExtractor={(item) => String(item.id)}
             numColumns={2}
+            refreshing={refreshing}
+            onRefresh={() => void loadData(true)}
             columnWrapperStyle={styles.productColumns}
             contentContainerStyle={styles.productList}
             showsVerticalScrollIndicator={false}
@@ -207,6 +208,7 @@ export default function MarketScreen() {
                   {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.productPhoto} contentFit="cover" /> : <PictureIcon width={52} height={52} color="#D0D3D8" />}
                 </View>
                 <View style={styles.productBody}>
+                  <ThemedText numberOfLines={2} style={styles.productPathText}>{item.imageUrl}</ThemedText>
                   <ThemedText numberOfLines={2} style={styles.productName}>{item.name}</ThemedText>
                   <View style={styles.productMeta}>
                     <ThemedText style={styles.productPrice}>¥{formatPrice(item.price)}</ThemedText>
@@ -268,6 +270,7 @@ const styles = StyleSheet.create({
   productImage: { width: '100%', aspectRatio: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F4F4F5' },
   productPhoto: { width: '100%', height: '100%' },
   productBody: { padding: 8, gap: 6 },
+  productPathText: { fontSize: 10, lineHeight: 14, color: '#8A909B', fontWeight: '600' },
   productName: { fontSize: 13, lineHeight: 18, color: '#20242B', fontWeight: '700' },
   productMeta: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 6 },
   productPrice: { fontSize: 16, color: '#111', fontWeight: '800' },

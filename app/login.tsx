@@ -6,7 +6,6 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Text,
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -120,10 +119,6 @@ export default function LoginScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.flex}>
         <ThemedView style={styles.inner}>
-          <ThemedView style={[styles.envWrap, { borderColor: border }]}>
-            <ThemedText style={styles.envTitle}>当前 EXPO_PUBLIC_API_URL</ThemedText>
-            <Text style={styles.envValue}>{process.env.EXPO_PUBLIC_API_URL}</Text>
-          </ThemedView>
           <ThemedText style={styles.label}>账号</ThemedText>
           <TextInput
             value={account}
@@ -201,24 +196,6 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 24,
     gap: 8,
-  },
-  envWrap: {
-    marginBottom: 8,
-    borderWidth: 1,
-    borderRadius: 10,
-    padding: 10,
-    backgroundColor: '#FFF6F8',
-  },
-  envTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#D81E3A',
-    marginBottom: 4,
-  },
-  envValue: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#D81E3A',
   },
   label: {
     fontSize: 14,

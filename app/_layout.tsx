@@ -1,4 +1,5 @@
 import { DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import * as SplashScreen from 'expo-splash-screen';
 import { Stack, usePathname, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, type ComponentType } from 'react';
@@ -10,6 +11,8 @@ import { AuthProvider, useAuth } from '@/contexts/auth-context';
 export const unstable_settings = {
   anchor: '(tabs)',
 };
+
+void SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
 const PaperProvider = require('react-native-paper/lib/commonjs/core/PaperProvider').default as ComponentType<any>;
 const { MD3LightTheme } = require('react-native-paper/lib/commonjs/styles/themes');
@@ -113,16 +116,31 @@ function AppNavigator() {
   );
 }
 
+function RootContent() {
+  const { isReady } = useAuth();
+
+  useEffect(() => {
+    if (!isReady) return;
+    void SplashScreen.hideAsync().catch(() => undefined);
+  }, [isReady]);
+
+  if (!isReady) return null;
+
+  return (
+    <ThemeProvider value={DefaultTheme}>
+      <AppNavigator />
+      <StatusBar style="dark" />
+    </ThemeProvider>
+  );
+}
+
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <PaperProvider theme={paperTheme}>
         <AppFeedbackProvider>
           <AuthProvider>
-            <ThemeProvider value={DefaultTheme}>
-              <AppNavigator />
-              <StatusBar style="dark" />
-            </ThemeProvider>
+            <RootContent />
           </AuthProvider>
         </AppFeedbackProvider>
       </PaperProvider>

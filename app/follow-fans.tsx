@@ -31,6 +31,7 @@ export default function FollowFansScreen() {
   const [active, setActive] = useState<FollowTab>('follow');
   const [list, setList] = useState<FollowListItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [updating, setUpdating] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -55,6 +56,15 @@ export default function FollowFansScreen() {
       setLoading(false);
     }
   }, [active, user?.account]);
+
+  const refreshCurrent = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadCurrent();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadCurrent]);
 
   useEffect(() => {
     void loadCurrent();
@@ -102,6 +112,8 @@ export default function FollowFansScreen() {
           data={list}
           keyExtractor={(item, index) => `${item.account}-${index}`}
           contentContainerStyle={styles.list}
+          refreshing={refreshing}
+          onRefresh={() => void refreshCurrent()}
           ListEmptyComponent={
             <View style={styles.empty}>
               {loading ? <AppActivityIndicator label="正在加载" /> : <ThemedText style={styles.emptyText}>{error || '暂无数据'}</ThemedText>}

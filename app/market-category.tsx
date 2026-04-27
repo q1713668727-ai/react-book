@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -24,62 +24,50 @@ export default function MarketCategoryScreen() {
   const [activeCategoryId, setActiveCategoryId] = useState(categoryId);
   const [products, setProducts] = useState<MarketProduct[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [errorText, setErrorText] = useState('');
 
-  useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    async function loadData() {
-      let nextCategoryId = categoryId;
-      let nextTabs: MarketCategoryChild[] = [];
-      if (categoryId > 0) {
-        nextTabs = await fetchMarketCategoryChildren(categoryId);
-        if (nextTabs.length) nextCategoryId = nextTabs[0].id;
-      }
-      const data = await fetchMarketProducts({ categoryId: nextCategoryId || undefined, keyword: nextCategoryId ? undefined : title, limit: 50 });
-      return { data, nextTabs, nextCategoryId };
-    }
-    loadData()
-      .then((data) => {
-        if (!alive) return;
-        setTabs(data.nextTabs);
-        setActiveCategoryId(data.nextCategoryId);
-        setProducts(data.data);
-        setErrorText('');
-      })
-      .catch((error: Error) => {
-        if (!alive) return;
-        setErrorText(error.message || '商品加载失败');
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [categoryId, title]);
-
-  useEffect(() => {
-    if (!activeCategoryId || activeCategoryId === categoryId && tabs.length !== 1) return;
-    let alive = true;
-    setLoading(true);
-    fetchMarketProducts({ categoryId: activeCategoryId, limit: 50 })
-      .then((data) => {
-        if (!alive) return;
+  const loadData = useCallback(
+    async (isRefresh = false, categoryOverride?: number) => {
+      if (isRefresh) setRefreshing(true);
+      else setLoading(true);
+      try {
+        let nextCategoryId = categoryOverride ?? categoryId;
+        let nextTabs: MarketCategoryChild[] = [];
+        const shouldLoadTabs = !categoryOverride;
+        if (shouldLoadTabs && categoryId > 0) {
+          nextTabs = await fetchMarketCategoryChildren(categoryId);
+          if (nextTabs.length) nextCategoryId = nextTabs[0].id;
+        }
+        const data = await fetchMarketProducts({
+          categoryId: nextCategoryId || undefined,
+          keyword: nextCategoryId ? undefined : title,
+          limit: 50,
+        });
+        if (shouldLoadTabs) {
+          setTabs(nextTabs);
+          setActiveCategoryId(nextCategoryId);
+        }
         setProducts(data);
         setErrorText('');
-      })
-      .catch((error: Error) => {
-        if (!alive) return;
-        setErrorText(error.message || '商品加载失败');
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [activeCategoryId, categoryId, tabs.length]);
+      } catch (error) {
+        setErrorText(error instanceof Error ? error.message || '商品加载失败' : '商品加载失败');
+      } finally {
+        if (isRefresh) setRefreshing(false);
+        else setLoading(false);
+      }
+    },
+    [categoryId, title]
+  );
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    if (!activeCategoryId || (activeCategoryId === categoryId && tabs.length !== 1)) return;
+    void loadData(false, activeCategoryId);
+  }, [activeCategoryId, categoryId, loadData, tabs.length]);
 
   const showTabs = tabs.length > 1;
   const displayProducts = useMemo(() => products, [products]);
@@ -119,6 +107,8 @@ export default function MarketCategoryScreen() {
             data={displayProducts}
             keyExtractor={(item) => String(item.id)}
             numColumns={2}
+            refreshing={refreshing}
+            onRefresh={() => void loadData(true, activeCategoryId || undefined)}
             columnWrapperStyle={styles.productColumns}
             contentContainerStyle={styles.productList}
             showsVerticalScrollIndicator={false}
@@ -136,6 +126,7 @@ export default function MarketCategoryScreen() {
                   {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.productPhoto} contentFit="cover" /> : <PictureIcon width={58} height={58} color="#D0D3D8" />}
                 </View>
                 <View style={styles.productBody}>
+                  <ThemedText numberOfLines={2} style={styles.productPathText}>{item.imageUrl}</ThemedText>
                   <ThemedText numberOfLines={2} style={styles.productName}>{item.name}</ThemedText>
                   <View style={styles.productMeta}>
                     <ThemedText style={styles.productPrice}>¥{formatPrice(item.price)}</ThemedText>
@@ -180,6 +171,7 @@ const styles = StyleSheet.create({
   productImage: { width: '100%', aspectRatio: 1.12, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F4F4F5' },
   productPhoto: { width: '100%', height: '100%' },
   productBody: { padding: 8, gap: 6 },
+  productPathText: { fontSize: 10, lineHeight: 14, color: '#8A909B', fontWeight: '600' },
   productName: { fontSize: 13, lineHeight: 18, color: '#20242B', fontWeight: '700' },
   productMeta: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 6 },
   productPrice: { fontSize: 16, color: '#111', fontWeight: '800' },

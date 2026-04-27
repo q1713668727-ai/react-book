@@ -2,7 +2,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Modal, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
+import { Animated, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useFeedback } from '@/components/app-feedback';
@@ -80,6 +80,7 @@ export default function CheckoutScreen() {
   const [couponSheetVisible, setCouponSheetVisible] = useState(false);
   const [payMethod, setPayMethod] = useState<PayMethod>('wechat');
   const [remark, setRemark] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
 
   const groups = useMemo(() => groupCartItems(items), [items]);
   const subtotal = useMemo(() => items.reduce((sum, item) => sum + item.price * item.quantity, 0), [items]);
@@ -114,6 +115,15 @@ export default function CheckoutScreen() {
       filterCouponsForLines(myCoupons, checkoutItems.map((item) => ({ productId: item.productId, shopId: item.shopId, amount: item.price * item.quantity }))),
     ).selected);
   }, []);
+
+  const refreshCheckout = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await load();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [load]);
 
   useFocusEffect(
     useCallback(() => {
@@ -188,7 +198,10 @@ export default function CheckoutScreen() {
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <Stack.Screen options={{ headerShown: false }} />
       <ThemedView style={styles.root}>
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.content}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refreshCheckout()} />}>
           <View style={styles.header}>
             <Pressable hitSlop={12} style={styles.backBtn} onPress={() => (router.canGoBack() ? router.back() : router.replace('/cart'))}>
               <BackIcon width={24} height={24} color="#222832" />
