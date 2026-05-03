@@ -272,7 +272,11 @@ export default function ProductDetailScreen() {
       soldText: sold,
     });
     setCartSheetVisible(false);
-    feedback.toast(`${name} 已加入购物车`);
+    feedback.toast(`${name} 已加入购物车`, {
+      tone: 'success',
+      actionLabel: '去购物车',
+      onAction: () => router.push('/cart'),
+    });
   }
 
   async function handleToggleWish() {
@@ -282,7 +286,15 @@ export default function ProductDetailScreen() {
     }
     const next = await toggleMarketWishItem(product);
     setWishListed(next);
-    feedback.toast(next ? '已加入心愿单' : '已取消收藏');
+    feedback.toast(next ? '已加入心愿单' : '已取消收藏', {
+      tone: next ? 'success' : 'default',
+      ...(next
+        ? {
+            actionLabel: '查看',
+            onAction: () => router.push({ pathname: '/cart', params: { mode: 'wish' } }),
+          }
+        : {}),
+    });
   }
 
   async function refreshDefaultAddress() {
@@ -385,6 +397,11 @@ export default function ProductDetailScreen() {
     setReceivedCouponIds((current) => current.includes(coupon.id) ? current : [...current, coupon.id]);
     try {
       await receiveMarketCoupon(coupon.id);
+      feedback.toast('优惠券领取成功', {
+        tone: 'success',
+        actionLabel: '去使用',
+        onAction: () => setCouponSheetVisible(false),
+      });
       setClaimedCoupons((current) => current.some((item) => item.id === coupon.id) ? current : [coupon, ...current]);
       setMarketCoupons((current) =>
         current.map((item) =>

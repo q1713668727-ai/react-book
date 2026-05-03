@@ -1,10 +1,10 @@
-import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppActivityIndicator } from '@/components/app-loading';
+import { SkeletonImage } from '@/components/skeleton-image';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { fetchMarketCategoryChildren, fetchMarketProducts, type MarketCategoryChild, type MarketProduct } from '@/lib/market-api';
@@ -123,7 +123,7 @@ export default function MarketCategoryScreen() {
                   })
                 }>
                 <View style={styles.productImage}>
-                  {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.productPhoto} contentFit="cover" /> : <PictureIcon width={58} height={58} color="#D0D3D8" />}
+                  {item.imageUrl ? <SkeletonImage source={{ uri: item.imageUrl }} style={styles.productPhoto} contentFit="cover" /> : <PictureIcon width={58} height={58} color="#D0D3D8" />}
                 </View>
                 <View style={styles.productBody}>
                   <ThemedText numberOfLines={2} style={styles.productPathText}>{item.imageUrl}</ThemedText>

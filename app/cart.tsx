@@ -1,13 +1,13 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
-import { Image } from 'expo-image';
 import { Animated, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect } from 'react';
 
 import { useFeedback } from '@/components/app-feedback';
+import { SkeletonImage } from '@/components/skeleton-image';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { readMarketCartItems, readMarketWishItems, removeMarketCartItems, removeMarketWishItems, updateMarketCartItemQuantity, writeMarketCheckoutItems, type MarketCartItem, type MarketWishItem } from '@/lib/market-cart';
@@ -140,13 +140,13 @@ export default function CartScreen() {
     const next = await removeMarketCartItems([key]);
     setCartItems(next);
     setSelectedKeys((current) => current.filter((item) => item !== key));
-    feedback.toast('已删除商品');
+    feedback.toast('已删除商品', { tone: 'success' });
   }
 
   async function deleteWishItem(productId: string) {
     const next = await removeMarketWishItems([productId]);
     setWishItems(next);
-    feedback.toast('已从心愿单删除');
+    feedback.toast('已从心愿单删除', { tone: 'success' });
   }
 
   async function goCheckout() {
@@ -276,7 +276,7 @@ function CartContent({
             </Pressable>
             <View style={styles.storeAvatar}>
               {group.shopAvatarUrl ? (
-                <Image source={{ uri: group.shopAvatarUrl }} style={styles.storeAvatarImage} contentFit="cover" />
+                <SkeletonImage source={{ uri: group.shopAvatarUrl }} style={styles.storeAvatarImage} contentFit="cover" />
               ) : (
                 <DefaultShopIcon width={14} height={14} />
               )}
@@ -308,7 +308,7 @@ function CartContent({
                       params: { id: item.productId, name: item.name, price: String(item.price), sold: item.soldText },
                     })
                   }>
-                  {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.imagePhoto} contentFit="cover" /> : <PictureIcon width={46} height={46} color="#C6CBD3" />}
+                  {item.imageUrl ? <SkeletonImage source={{ uri: item.imageUrl }} style={styles.imagePhoto} contentFit="cover" /> : <PictureIcon width={46} height={46} color="#C6CBD3" />}
                 </Pressable>
                 <View style={styles.cartInfo}>
                   <ThemedText numberOfLines={2} style={styles.cartTitle}>{item.name}</ThemedText>
@@ -373,7 +373,7 @@ function WishContent({ router, items, onDeleteItem }: { router: ReturnType<typeo
               })
             }>
             <View style={styles.wishImage}>
-              {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.imagePhoto} contentFit="cover" /> : <PictureIcon width={54} height={54} color="#C6CBD3" />}
+              {item.imageUrl ? <SkeletonImage source={{ uri: item.imageUrl }} style={styles.imagePhoto} contentFit="cover" /> : <PictureIcon width={54} height={54} color="#C6CBD3" />}
             </View>
             <View style={styles.wishInfo}>
               <ThemedText numberOfLines={2} style={styles.wishTitle}>{item.name}</ThemedText>
@@ -475,7 +475,7 @@ function RecommendGrid({ router, products }: { router: ReturnType<typeof useRout
               })
             }>
             <View style={styles.productImage}>
-              {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.imagePhoto} contentFit="cover" /> : <PictureIcon width={52} height={52} color="#D0D3D8" />}
+              {item.imageUrl ? <SkeletonImage source={{ uri: item.imageUrl }} style={styles.imagePhoto} contentFit="cover" /> : <PictureIcon width={52} height={52} color="#D0D3D8" />}
             </View>
             <View style={styles.productBody}>
               <ThemedText numberOfLines={2} style={styles.productName}>{item.name}</ThemedText>

@@ -1,10 +1,10 @@
-import { Image } from 'expo-image';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppActivityIndicator } from '@/components/app-loading';
+import { SkeletonImage } from '@/components/skeleton-image';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { readMarketBrowseItems, type MarketBrowseItem } from '@/lib/market-cart';
@@ -107,7 +107,7 @@ export default function ProductHistorySearchScreen() {
                 }>
                 <View style={styles.thumb}>
                   {item.imageUrl ? (
-                    <Image source={{ uri: item.imageUrl }} style={styles.thumbImage} contentFit="cover" />
+                    <SkeletonImage source={{ uri: item.imageUrl }} style={styles.thumbImage} contentFit="cover" />
                   ) : (
                     <PictureIcon width={46} height={46} color="#C6CBD3" />
                   )}

@@ -1,5 +1,4 @@
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { Stack, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -7,6 +6,7 @@ import { Modal, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, Vi
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useFeedback } from '@/components/app-feedback';
+import { SkeletonImage } from '@/components/skeleton-image';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { cancelMarketOrder, cancelMarketOrderRefund, confirmMarketOrderReceipt, fetchMarketOrders, fetchMarketProduct, reviewMarketOrder, type MarketOrder, type MarketOrderStatus } from '@/lib/market-api';
@@ -189,7 +189,11 @@ export default function OrdersScreen() {
     if (!ok) return;
     try {
       await confirmMarketOrderReceipt(order);
-      feedback.toast('已确认收货');
+      feedback.toast('已确认收货', {
+        tone: 'success',
+        actionLabel: '去评价',
+        onAction: () => openReview(order),
+      });
       await loadOrders();
     } catch (error) {
       feedback.toast(error instanceof Error ? error.message : '确认收货失败');
@@ -206,7 +210,7 @@ export default function OrdersScreen() {
     if (!ok) return;
     try {
       await cancelMarketOrder(order);
-      feedback.toast('订单已取消');
+      feedback.toast('订单已取消', { tone: 'success' });
       await loadOrders();
     } catch (error) {
       feedback.toast(error instanceof Error ? error.message : '取消订单失败');
@@ -222,7 +226,7 @@ export default function OrdersScreen() {
     if (!ok) return;
     try {
       await cancelMarketOrderRefund(order);
-      feedback.toast('售后已取消');
+      feedback.toast('售后已取消', { tone: 'success' });
       await loadOrders();
     } catch (error) {
       feedback.toast(error instanceof Error ? error.message : '取消售后失败');
@@ -255,7 +259,7 @@ export default function OrdersScreen() {
     }
     try {
       await reviewMarketOrder(reviewOrder, content, reviewRating);
-      feedback.toast('评价已发布');
+      feedback.toast('评价已发布', { tone: 'success' });
       setReviewOrder(null);
       setReviewText('');
       await loadOrders();
@@ -442,7 +446,7 @@ function OrderCard({
     <View style={styles.orderCard}>
       <View style={styles.shopRow}>
         <View style={styles.shopAvatar}>
-          {order.shopAvatarUrl ? <Image source={{ uri: order.shopAvatarUrl }} style={styles.shopAvatarImage} contentFit="cover" /> : <DefaultShopIcon width={20} height={20} />}
+          {order.shopAvatarUrl ? <SkeletonImage source={{ uri: order.shopAvatarUrl }} style={styles.shopAvatarImage} contentFit="cover" /> : <DefaultShopIcon width={20} height={20} />}
         </View>
         <ThemedText numberOfLines={1} style={styles.shopName}>{order.shop}</ThemedText>
         <Feather name="chevron-right" size={22} color="#2B2F36" />
@@ -451,7 +455,7 @@ function OrderCard({
 
       <Pressable style={styles.productRow} onPress={openProduct}>
         <View style={styles.productImage}>
-          {first.imageUrl ? <Image source={{ uri: first.imageUrl }} style={styles.productPhoto} contentFit="cover" /> : <PictureIcon width={58} height={58} color="#D2D6DD" />}
+          {first.imageUrl ? <SkeletonImage source={{ uri: first.imageUrl }} style={styles.productPhoto} contentFit="cover" /> : <PictureIcon width={58} height={58} color="#D2D6DD" />}
         </View>
         <View style={styles.productInfo}>
           <View style={styles.productTitleRow}>

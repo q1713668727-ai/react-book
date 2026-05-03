@@ -1,8 +1,8 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { type ComponentType, type Ref, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Image } from 'expo-image';
-import { Animated, FlatList, Keyboard, Platform, Pressable, StyleSheet, TextInput, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Animated, FlatList, Keyboard, Platform, Pressable, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useFeedback } from '@/components/app-feedback';
 import { ThemedText } from '@/components/themed-text';
@@ -166,6 +166,8 @@ export default function ProductServiceScreen() {
   const router = useRouter();
   const feedback = useFeedback();
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
+  const windowDimensions = useWindowDimensions();
   const params = useLocalSearchParams<{
     productId?: string;
     shopId?: string;
@@ -197,7 +199,7 @@ export default function ProductServiceScreen() {
   const [showEmoji, setShowEmoji] = useState(false);
   const [emojiMounted, setEmojiMounted] = useState(false);
   const [showQuickSendCard, setShowQuickSendCard] = useState(true);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [keyboardFrame, setKeyboardFrame] = useState<{ screenY: number; height: number } | null>(null);
   const [composerHeight, setComposerHeight] = useState(116);
   const emojiAnim = useRef(new Animated.Value(0)).current;
 
@@ -205,7 +207,9 @@ export default function ProductServiceScreen() {
   const seenIdsRef = useRef<Set<number>>(new Set());
   const listRef = useRef<FlatList<ServiceDisplayItem> | null>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const settleScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleScrollTimerRefs = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadSeqRef = useRef(0);
   const rafRef = useRef<number | null>(null);
   const displayMessages = useMemo(() => toDisplayMessages(messages), [messages]);
 
@@ -223,11 +227,53 @@ export default function ProductServiceScreen() {
   const orderStatusText = orderStatus ? `${orderStatus}${refundStatus ? `（${refundStatus}）` : ''}` : '';
   const sendDesc = `店铺：${shopName}`;
   const productId = String(session?.productId || params.productId || '').trim();
+  const keyboardHeight = useMemo(() => {
+    if (!keyboardFrame) return 0;
+
+    const frameHeight = Number.isFinite(keyboardFrame.height) ? Math.max(0, keyboardFrame.height) : 0;
+    const screenY = Number.isFinite(keyboardFrame.screenY)
+      ? keyboardFrame.screenY
+      : windowDimensions.height - frameHeight;
+    const overlap = Math.max(0, windowDimensions.height - screenY);
+    const inset = overlap > 0 ? Math.min(overlap, frameHeight || overlap) : frameHeight;
+
+    return Math.max(0, inset - insets.bottom);
+  }, [insets.bottom, keyboardFrame, windowDimensions.height]);
 
   const triggerEmojiBurst = useCallback((emoji: string) => {
     const idx = emojiList.indexOf(emoji);
     if (idx < 0) return;
     burstRef.current?.burst({ count: 12, intensity: 1.1, emojiIndex: idx });
+  }, []);
+
+  const scrollToBottom = useCallback((animated = true) => {
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    settleScrollTimerRefs.current.forEach((timer) => clearTimeout(timer));
+    settleScrollTimerRefs.current = [];
+
+    const runScroll = (nextAnimated: boolean) => {
+      try {
+        listRef.current?.scrollToEnd({ animated: nextAnimated });
+      } catch {
+        // FlatList may briefly reject scrollToEnd before it has measured content.
+      }
+    };
+
+    rafRef.current = requestAnimationFrame(() => {
+      runScroll(animated);
+      rafRef.current = null;
+    });
+
+    [80, 180, 320].forEach((delay) => {
+      const timer = setTimeout(() => {
+        settleScrollTimerRefs.current = settleScrollTimerRefs.current.filter((item) => item !== timer);
+        runScroll(animated);
+      }, delay);
+      settleScrollTimerRefs.current.push(timer);
+    });
   }, []);
 
   const applySessionData = useCallback(
@@ -236,11 +282,13 @@ export default function ProductServiceScreen() {
       setSession(data);
       setMessages((prev) => {
         const next = Array.isArray(data.messages) ? data.messages : [];
+        let hasNewIncoming = false;
         if (options?.burstForIncoming) {
           const seen = seenIdsRef.current;
           next.forEach((item) => {
             if (seen.has(item.id)) return;
             seen.add(item.id);
+            hasNewIncoming = true;
             if (item.sender !== 'user' && isEmojiOnly(item.content || '')) {
               triggerEmojiBurst(String(item.content || '').trim());
             }
@@ -253,18 +301,22 @@ export default function ProductServiceScreen() {
           const same = prev.every((item, index) => item.id === next[index]?.id && item.content === next[index]?.content);
           if (same) return prev;
         }
+        if (hasNewIncoming || next.length !== prev.length) scrollToBottom(true);
         return next;
       });
       if (!options?.silent) setShowQuickSendCard(true);
     },
-    [triggerEmojiBurst],
+    [scrollToBottom, triggerEmojiBurst],
   );
 
   const loadSession = useCallback(async (options?: { silent?: boolean; burstForIncoming?: boolean }) => {
+    const seq = ++loadSeqRef.current;
     try {
       const data = await fetchMarketServiceSession({ productId: params.productId, shopId: params.shopId });
+      if (seq !== loadSeqRef.current) return;
       applySessionData(data || null, options);
     } catch (error) {
+      if (seq !== loadSeqRef.current) return;
       if (!options?.silent) feedback.toast(error instanceof Error ? error.message : '客服会话加载失败');
     }
   }, [applySessionData, feedback, params.productId, params.shopId]);
@@ -283,43 +335,53 @@ export default function ProductServiceScreen() {
   }, [loadSession]);
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      void loadSession({ silent: true, burstForIncoming: true });
-    }, 2000);
-    return () => clearInterval(timer);
+    let disposed = false;
+
+    const schedule = (delay = 1200) => {
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = setTimeout(async () => {
+        pollTimerRef.current = null;
+        if (disposed) return;
+        await loadSession({ silent: true, burstForIncoming: true });
+        if (!disposed) schedule();
+      }, delay);
+    };
+
+    schedule(800);
+
+    return () => {
+      disposed = true;
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
   }, [loadSession]);
 
   useEffect(() => {
-    const showSub = Keyboard.addListener('keyboardDidShow', (event) => {
-      setKeyboardHeight(event.endCoordinates.height);
-    });
-    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
-      setKeyboardHeight(0);
-    });
+    const updateKeyboardFrame = (event: { endCoordinates?: { height?: number; screenY?: number } }) => {
+      const height = Math.max(0, Number(event.endCoordinates?.height || 0));
+      const screenY = Number(event.endCoordinates?.screenY);
+      setKeyboardFrame({
+        height,
+        screenY: Number.isFinite(screenY) ? screenY : windowDimensions.height - height,
+      });
+    };
+    const hideKeyboardFrame = () => {
+      setKeyboardFrame(null);
+    };
+    const showSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow', updateKeyboardFrame);
+    const didShowSub = Platform.OS === 'ios' ? Keyboard.addListener('keyboardDidShow', updateKeyboardFrame) : null;
+    const hideSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', hideKeyboardFrame);
+    const didHideSub = Platform.OS === 'ios' ? Keyboard.addListener('keyboardDidHide', hideKeyboardFrame) : null;
+
     return () => {
       showSub.remove();
+      didShowSub?.remove();
       hideSub.remove();
+      didHideSub?.remove();
     };
-  }, []);
-
-  const scrollToBottom = useCallback((animated = true) => {
-    if (rafRef.current != null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-    if (settleScrollTimerRef.current) {
-      clearTimeout(settleScrollTimerRef.current);
-      settleScrollTimerRef.current = null;
-    }
-    rafRef.current = requestAnimationFrame(() => {
-      listRef.current?.scrollToEnd({ animated });
-      rafRef.current = null;
-    });
-    settleScrollTimerRef.current = setTimeout(() => {
-      listRef.current?.scrollToEnd({ animated: true });
-      settleScrollTimerRef.current = null;
-    }, 90);
-  }, []);
+  }, [windowDimensions.height]);
 
   const openEmojiPanel = useCallback(() => {
     Keyboard.dismiss();
@@ -359,10 +421,8 @@ export default function ProductServiceScreen() {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
-      if (settleScrollTimerRef.current) {
-        clearTimeout(settleScrollTimerRef.current);
-        settleScrollTimerRef.current = null;
-      }
+      settleScrollTimerRefs.current.forEach((timer) => clearTimeout(timer));
+      settleScrollTimerRefs.current = [];
     };
   }, [displayMessages.length, keyboardHeight, composerHeight, showEmoji, scrollToBottom]);
 
@@ -383,6 +443,7 @@ export default function ProductServiceScreen() {
         seenIdsRef.current.add(sent.id);
         setMessages((current) => [...current, sent]);
         scrollToBottom(true);
+        void loadSession({ silent: true, burstForIncoming: true });
       }
       if (isEmojiOnly(content)) triggerEmojiBurst(content);
       return true;

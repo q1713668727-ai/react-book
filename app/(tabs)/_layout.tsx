@@ -2,9 +2,12 @@ import type { BottomTabBarButtonProps } from '@react-navigation/bottom-tabs';
 import { Tabs, useRouter } from 'expo-router';
 import React from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { useAuth } from '@/contexts/auth-context';
+
+const TAB_BAR_BASE_HEIGHT = 60;
 
 function renderTabLabel(label: string) {
   function TabLabelRenderer({ focused, color }: { focused: boolean; color: string }) {
@@ -25,6 +28,9 @@ function renderTabButton(props: BottomTabBarButtonProps) {
 export default function TabLayout() {
   const router = useRouter();
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(insets.bottom, 0);
+  const tabBarHeight = TAB_BAR_BASE_HEIGHT + bottomInset;
 
   return (
     <Tabs
@@ -34,9 +40,9 @@ export default function TabLayout() {
         tabBarStyle: {
           backgroundColor: '#FFFFFF',
           borderTopColor: '#EEEEEE',
-          height: 56,
+          height: tabBarHeight,
           paddingTop: 0,
-          paddingBottom: 0,
+          paddingBottom: bottomInset,
         },
         tabBarItemStyle: styles.tabItem,
         tabBarIcon: () => null,
@@ -115,9 +121,10 @@ const styles = StyleSheet.create({
     marginBottom: 0,
   },
   tabLabelContainer: {
-    height: 56,
+    height: TAB_BAR_BASE_HEIGHT,
     alignItems: 'center',
     justifyContent: 'center',
+    transform: [{ translateY: -4 }],
   },
   tabLabel: {
     fontSize: 15,

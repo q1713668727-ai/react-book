@@ -1,10 +1,10 @@
-import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppActivityIndicator } from '@/components/app-loading';
+import { SkeletonImage } from '@/components/skeleton-image';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { fetchMarketProducts, fetchMarketShop, type MarketProduct, type MarketShop } from '@/lib/market-api';
@@ -185,7 +185,7 @@ export default function ShopDetailScreen() {
           </View>
           <View style={styles.shopInfo}>
             <View style={styles.logo}>
-              {shop?.avatarUrl ? <Image source={{ uri: shop.avatarUrl }} style={styles.logoImage} contentFit="cover" /> : <ThemedText style={styles.logoText}>{shopName.slice(0, 4).toUpperCase()}</ThemedText>}
+              {shop?.avatarUrl ? <SkeletonImage source={{ uri: shop.avatarUrl }} style={styles.logoImage} contentFit="cover" /> : <ThemedText style={styles.logoText}>{shopName.slice(0, 4).toUpperCase()}</ThemedText>}
             </View>
             <View style={styles.shopCopy}>
               <ThemedText numberOfLines={1} style={styles.shopName}>{shopName}</ThemedText>
@@ -255,7 +255,7 @@ export default function ShopDetailScreen() {
                   })
                 }>
                 <View style={styles.productImage}>
-                  {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.productPhoto} contentFit="cover" /> : <PictureIcon width={74} height={74} color="#BFC4CC" />}
+                  {item.imageUrl ? <SkeletonImage source={{ uri: item.imageUrl }} style={styles.productPhoto} contentFit="cover" /> : <PictureIcon width={74} height={74} color="#BFC4CC" />}
                 </View>
                 <View style={styles.productBody}>
                   <ThemedText numberOfLines={2} style={styles.productName}>{item.name}</ThemedText>

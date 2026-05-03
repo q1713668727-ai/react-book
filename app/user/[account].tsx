@@ -6,6 +6,7 @@ import { FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppActivityIndicator } from '@/components/app-loading';
+import { SkeletonImage } from '@/components/skeleton-image';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
@@ -408,7 +409,7 @@ export default function UserProfileScreen() {
                   }}>
                   <View style={styles.card}>
                     {displayImageUri ? (
-                      <Image source={{ uri: displayImageUri }} style={[styles.cardImage, tall ? styles.cardImageTall : styles.cardImageShort]} contentFit="cover" />
+                      <SkeletonImage source={{ uri: displayImageUri }} style={[styles.cardImage, tall ? styles.cardImageTall : styles.cardImageShort]} contentFit="cover" />
                     ) : (
                       <View style={[styles.cardImage, tall ? styles.cardImageTall : styles.cardImageShort, styles.imageFallback]} />
                     )}
@@ -422,7 +423,7 @@ export default function UserProfileScreen() {
                       {item.brief ? <ThemedText numberOfLines={2} style={styles.cardBrief}>{item.brief}</ThemedText> : null}
                       <View style={styles.cardInfo}>
                         <View style={styles.authorRow}>
-                          <Image source={avatarSource(authorAvatar)} style={styles.authorAvatar} contentFit="cover" />
+                          <SkeletonImage source={avatarSource(authorAvatar)} style={styles.authorAvatar} contentFit="cover" />
                           <ThemedText numberOfLines={1} style={styles.authorName}>{authorName}</ThemedText>
                         </View>
                         <Pressable

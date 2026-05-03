@@ -2,11 +2,13 @@ import { DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import * as SplashScreen from 'expo-splash-screen';
 import { Stack, usePathname, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, type ComponentType } from 'react';
+import { useCallback, useEffect, useState, type ComponentType } from 'react';
 import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AppFeedbackProvider } from '@/components/app-feedback';
+import { LaunchCover } from '@/components/launch-cover';
 import { AuthProvider, useAuth } from '@/contexts/auth-context';
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -118,13 +120,19 @@ function AppNavigator() {
 
 function RootContent() {
   const { isReady } = useAuth();
+  const [isNativeSplashHidden, setIsNativeSplashHidden] = useState(false);
+
+  const hideNativeSplash = useCallback(() => {
+    if (isNativeSplashHidden) return;
+    setIsNativeSplashHidden(true);
+    void SplashScreen.hideAsync().catch(() => undefined);
+  }, [isNativeSplashHidden]);
 
   useEffect(() => {
-    if (!isReady) return;
-    void SplashScreen.hideAsync().catch(() => undefined);
-  }, [isReady]);
+    if (isReady) hideNativeSplash();
+  }, [hideNativeSplash, isReady]);
 
-  if (!isReady) return null;
+  if (!isReady) return <LaunchCover onReady={hideNativeSplash} />;
 
   return (
     <ThemeProvider value={DefaultTheme}>
@@ -137,13 +145,15 @@ function RootContent() {
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <PaperProvider theme={paperTheme}>
-        <AppFeedbackProvider>
-          <AuthProvider>
-            <RootContent />
-          </AuthProvider>
-        </AppFeedbackProvider>
-      </PaperProvider>
+      <SafeAreaProvider>
+        <PaperProvider theme={paperTheme}>
+          <AppFeedbackProvider>
+            <AuthProvider>
+              <RootContent />
+            </AuthProvider>
+          </AppFeedbackProvider>
+        </PaperProvider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }

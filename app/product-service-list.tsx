@@ -1,5 +1,4 @@
 import { Feather } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { Stack, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useCallback, useMemo, useRef, useState } from 'react';
@@ -7,6 +6,7 @@ import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-n
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useFeedback } from '@/components/app-feedback';
+import { SkeletonImage } from '@/components/skeleton-image';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { deleteMarketServiceSession, fetchMarketServiceSessions, type MarketServiceSession } from '@/lib/market-api';
@@ -157,7 +157,7 @@ export default function ProductServiceListScreen() {
                   })
                 }>
                 <View style={styles.shopAvatar}>
-                  {session.shopAvatarUrl ? <Image source={{ uri: session.shopAvatarUrl }} style={styles.avatarImage} contentFit="cover" /> : <DefaultShopIcon width={24} height={24} />}
+                  {session.shopAvatarUrl ? <SkeletonImage source={{ uri: session.shopAvatarUrl }} style={styles.avatarImage} contentFit="cover" /> : <DefaultShopIcon width={24} height={24} />}
                 </View>
                 <View style={styles.sessionInfo}>
                   <View style={styles.sessionTitleRow}>
@@ -177,7 +177,7 @@ export default function ProductServiceListScreen() {
                   {session.product ? (
                     <View style={styles.productLine}>
                       <View style={styles.productThumb}>
-                        {session.productImageUrl ? <Image source={{ uri: session.productImageUrl }} style={styles.avatarImage} contentFit="cover" /> : <PictureIcon width={16} height={16} color="#C6CBD3" />}
+                        {session.productImageUrl ? <SkeletonImage source={{ uri: session.productImageUrl }} style={styles.avatarImage} contentFit="cover" /> : <PictureIcon width={16} height={16} color="#C6CBD3" />}
                       </View>
                       <ThemedText numberOfLines={1} style={styles.productName}>{session.product}</ThemedText>
                     </View>

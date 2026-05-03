@@ -20,6 +20,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useFeedback } from '@/components/app-feedback';
 import { AppActivityIndicator } from '@/components/app-loading';
+import { SkeletonImage } from '@/components/skeleton-image';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
@@ -752,10 +753,10 @@ export default function ProfileScreen() {
                         <ThemedText style={styles.watchNum}>{stats.fans}</ThemedText>
                         <ThemedText style={styles.watchText}>粉丝</ThemedText>
                       </Pressable>
-                      <View style={styles.watch}>
+                      <Pressable style={styles.watch} onPress={() => router.push('/chat-likes')}>
                         <ThemedText style={styles.watchNum}>{stats.likes}</ThemedText>
                         <ThemedText style={styles.watchText}>获赞与收藏</ThemedText>
-                      </View>
+                      </Pressable>
                     </View>
                     <View style={styles.actionButtons}>
                       <Pressable style={styles.secondaryBtn} onPress={openEditPanel}>
@@ -824,7 +825,7 @@ export default function ProfileScreen() {
                 }}>
                 <ThemedView style={styles.noteCard}>
                   {displayImageUri ? (
-                    <Image source={{ uri: displayImageUri }} style={[styles.noteImage, tall ? styles.noteImageTall : styles.noteImageShort]} contentFit="cover" />
+                    <SkeletonImage source={{ uri: displayImageUri }} style={[styles.noteImage, tall ? styles.noteImageTall : styles.noteImageShort]} contentFit="cover" />
                   ) : (
                     <View style={[styles.noteImage, tall ? styles.noteImageTall : styles.noteImageShort, styles.noteImageFallback]} />
                   )}
@@ -843,7 +844,7 @@ export default function ProfileScreen() {
                     <View style={styles.noteMetaRow}>
                       <View style={styles.authorRow}>
                         {item.authorAvatar ? (
-                          <Image source={{ uri: item.authorAvatar }} style={styles.noteAvatar} contentFit="cover" />
+                          <SkeletonImage source={{ uri: item.authorAvatar }} style={styles.noteAvatar} contentFit="cover" />
                         ) : (
                           <View style={styles.noteAvatarFallback} />
                         )}

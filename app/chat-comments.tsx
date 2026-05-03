@@ -1,4 +1,3 @@
-import { Image } from 'expo-image';
 import { Stack, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { Animated, FlatList, Pressable, StyleSheet, View } from 'react-native';
@@ -7,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { AppActivityIndicator } from '@/components/app-loading';
+import { SkeletonImage } from '@/components/skeleton-image';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
@@ -205,7 +205,7 @@ export default function ChatCommentsScreen() {
                 );
               }}>
               <Pressable style={styles.row} onPress={() => openNotice(item)}>
-                <Image source={item.actor?.avatar ? { uri: resolveMediaUrl(item.actor.avatar) } : avatarImage} style={styles.avatar} contentFit="cover" />
+                <SkeletonImage source={item.actor?.avatar ? { uri: resolveMediaUrl(item.actor.avatar) } : avatarImage} style={styles.avatar} contentFit="cover" />
                 <View style={styles.main}>
                   <View style={styles.nameRow}>
                     <ThemedText numberOfLines={1} style={styles.name}>{item.actor?.name || item.actor?.account || '用户'}</ThemedText>
@@ -220,7 +220,7 @@ export default function ChatCommentsScreen() {
                     <ThemedText numberOfLines={1} style={styles.quote}>{item.quote || '点击查看详情'}</ThemedText>
                   </View>
                 </View>
-                {item.thumbnail ? <Image source={{ uri: resolveMediaUrl(item.thumbnail) }} style={styles.thumbnail} contentFit="cover" /> : <View style={styles.thumbnailPlaceholder} />}
+                {item.thumbnail ? <SkeletonImage source={{ uri: resolveMediaUrl(item.thumbnail) }} style={styles.thumbnail} contentFit="cover" /> : <View style={styles.thumbnailPlaceholder} />}
               </Pressable>
             </Swipeable>
           )}

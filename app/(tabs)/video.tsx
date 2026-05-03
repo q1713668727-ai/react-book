@@ -1,5 +1,5 @@
 import { Image } from 'expo-image';
-import { createVideoPlayer, VideoView, type VideoPlayer } from 'expo-video';
+import { createVideoPlayer, setVideoCacheSizeAsync, VideoView, type ContentType, type VideoPlayer, type VideoSource } from 'expo-video';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import { Feather } from '@expo/vector-icons';
@@ -43,6 +43,40 @@ function safelyPause(ref: VideoPlayer | null | undefined) {
 
 function safelyPlay(ref: VideoPlayer | null | undefined) {
   ref?.play();
+}
+
+const VIDEO_CACHE_SIZE_BYTES = 512 * 1024 * 1024;
+const PLAYER_WINDOW_RADIUS = 1;
+
+function shuffleVideos<T>(list: T[]) {
+  const next = [...list];
+  for (let i = next.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [next[i], next[j]] = [next[j], next[i]];
+  }
+  return next;
+}
+
+function getVideoContentType(uri: string): ContentType {
+  const cleanUri = uri.split('?')[0].toLowerCase();
+  if (cleanUri.endsWith('.m3u8')) return 'hls';
+  if (cleanUri.endsWith('.mpd')) return 'dash';
+  if (cleanUri.endsWith('.ism') || cleanUri.endsWith('.isml')) return 'smoothStreaming';
+  return 'auto';
+}
+
+function toVideoSource(item: VideoFeedItem): VideoSource {
+  if (!item.videoUri) return null;
+  return {
+    uri: item.videoUri,
+    useCaching: !/\.m3u8(?:\?|$)/i.test(item.videoUri),
+    contentType: getVideoContentType(item.videoUri),
+    metadata: {
+      title: item.title,
+      artist: item.authorName,
+      artwork: item.coverUri,
+    },
+  };
 }
 
 function VideoTapOverlay({ onPress }: { onPress: () => void }) {
@@ -283,6 +317,7 @@ export default function VideoScreen() {
   const [collectIds, setCollectIds] = useState<Set<string>>(new Set());
   const [followedMap, setFollowedMap] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [pendingLike, setPendingLike] = useState(false);
   const [pendingCollect, setPendingCollect] = useState(false);
   const [pendingFollow, setPendingFollow] = useState(false);
@@ -297,14 +332,20 @@ export default function VideoScreen() {
   const [pendingHidden, setPendingHidden] = useState(false);
   const [deletePromptVisible, setDeletePromptVisible] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(false);
+  const [, bumpPlayerVersion] = useState(0);
 
   const videoRefs = useRef<Record<string, VideoPlayer | null>>({});
   const videoSubscriptions = useRef<Record<string, { remove: () => void }[]>>({});
   const listRef = useRef<FlatList<VideoFeedItem> | null>(null);
   const commentInputRef = useRef<TextInput | null>(null);
   const pausedIdsRef = useRef<Set<string>>(new Set());
+  const activeIndexRef = useRef(0);
   const settingsTranslateY = useRef(new Animated.Value(280)).current;
   const targetId = Array.isArray(params.id) ? params.id[0] : params.id;
+
+  useEffect(() => {
+    void setVideoCacheSizeAsync(VIDEO_CACHE_SIZE_BYTES).catch(() => undefined);
+  }, []);
 
   const updatePlaybackStatus = useCallback((id: string, positionMillis: number, durationMillis: number) => {
     setPlaybackMap((prev) => {
@@ -389,18 +430,24 @@ export default function VideoScreen() {
     return Array.isArray(current?.commentList) ? current.commentList : [];
   }, [current?.commentList]);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (options?: { refresh?: boolean; randomize?: boolean }) => {
+    const isRefresh = Boolean(options?.refresh);
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     try {
-      const videoRes = await postPublicJson<VideoDto[]>('/video', targetId ? { targetId, account: user?.account || '' } : {});
+      pauseAllVideos();
+      const videoRes = await postPublicJson<VideoDto[]>('/video', targetId && !options?.randomize ? { targetId, account: user?.account || '' } : {});
       const userRes = user?.account
         ? await postJson<UserInfoResult>('/user/getUserInfo', { account: user.account }).catch(() => ({ result: { likes: '', collects: '' } as UserInfoResult }))
         : { result: { likes: '', collects: '' } as UserInfoResult };
 
-      const nextItems = Array.isArray(videoRes.result) ? videoRes.result.map((item) => mapVideo(item, user?.account || '')) : [];
-      const targetIndex = targetId ? Math.max(0, nextItems.findIndex((item) => item.id === String(targetId))) : 0;
+      const mappedItems = Array.isArray(videoRes.result) ? videoRes.result.map((item) => mapVideo(item, user?.account || '')) : [];
+      const nextItems = options?.randomize ? shuffleVideos(mappedItems) : mappedItems;
+      const targetIndex = targetId && !options?.randomize ? Math.max(0, nextItems.findIndex((item) => item.id === String(targetId))) : 0;
       setItems(nextItems);
       setActiveIndex(targetIndex);
+      activeIndexRef.current = targetIndex;
+      setPausedIds(new Set());
       setLikedIds(parseIdList(userRes.result?.likes));
       setCollectIds(parseIdList(userRes.result?.collects));
 
@@ -417,13 +464,18 @@ export default function VideoScreen() {
       const message = err instanceof Error ? err.message : '';
       setError(/登录已失效|请先登录|登录过期|重新登录/.test(message) ? null : message || '加载视频失败');
     } finally {
-      setLoading(false);
+      if (isRefresh) setRefreshing(false);
+      else setLoading(false);
     }
-  }, [targetId, user?.account]);
+  }, [pauseAllVideos, targetId, user?.account]);
 
   useEffect(() => {
     pausedIdsRef.current = pausedIds;
   }, [pausedIds]);
+
+  useEffect(() => {
+    activeIndexRef.current = activeIndex;
+  }, [activeIndex]);
 
   useEffect(() => {
     if (!commentVisible) return;
@@ -456,12 +508,19 @@ export default function VideoScreen() {
     }, [loadData, pauseAllVideos])
   );
 
-  const onViewableItemsChanged = useRef(
+  const refreshVideos = useCallback(() => {
+    void loadData({ refresh: true, randomize: true });
+  }, [loadData]);
+
+  const onViewableItemsChanged = useCallback(
     ({ viewableItems }: { viewableItems: ViewToken[] }) => {
       const first = viewableItems[0];
       if (!first?.index && first?.index !== 0) return;
       const index = first.index;
+      const previous = items[activeIndexRef.current];
+      if (previous && previous.id !== items[index]?.id) safelyPause(videoRefs.current[previous.id]);
       setActiveIndex(index);
+      activeIndexRef.current = index;
 
       const activeId = items[index]?.id;
       if (activeId) pauseInactiveVideos(activeId);
@@ -485,8 +544,9 @@ export default function VideoScreen() {
           setFollowedMap((prev) => ({ ...prev, [target.account]: Boolean(res.result?.followed) }));
         })
         .catch(() => undefined);
-    }
-  ).current;
+    },
+    [followedMap, items, pauseInactiveVideos, user?.account]
+  );
 
   function togglePlayback(item: VideoFeedItem) {
     const ref = videoRefs.current[item.id];
@@ -538,15 +598,28 @@ export default function VideoScreen() {
   }
 
   useEffect(() => {
-    const nextIds = new Set(items.map((item) => item.id));
+    const nextIds = new Set(
+      items
+        .filter((_, index) => Math.abs(index - activeIndex) <= PLAYER_WINDOW_RADIUS)
+        .map((item) => item.id)
+    );
 
-    items.forEach((item) => {
+    items.forEach((item, index) => {
+      if (Math.abs(index - activeIndex) > PLAYER_WINDOW_RADIUS) return;
       if (!item.videoUri || videoRefs.current[item.id]) return;
 
-      const player = createVideoPlayer({ uri: item.videoUri });
+      const player = createVideoPlayer(toVideoSource(item));
       player.loop = true;
       player.muted = false;
+      player.keepScreenOnWhilePlaying = item.id === items[activeIndex]?.id;
       player.timeUpdateEventInterval = 0.25;
+      player.bufferOptions = {
+        preferredForwardBufferDuration: item.id === items[activeIndex]?.id ? 12 : 6,
+        waitsToMinimizeStalling: true,
+        minBufferForPlayback: 1,
+        maxBufferBytes: 32 * 1024 * 1024,
+        prioritizeTimeOverSizeThreshold: true,
+      };
 
       const timeUpdateSub = player.addListener('timeUpdate', ({ currentTime }) => {
         updatePlaybackStatus(item.id, Math.round(currentTime * 1000), Math.round((player.duration || 0) * 1000));
@@ -557,15 +630,19 @@ export default function VideoScreen() {
 
       videoRefs.current[item.id] = player;
       videoSubscriptions.current[item.id] = [timeUpdateSub, statusChangeSub];
+      bumpPlayerVersion((version) => version + 1);
 
       if (item.id === items[activeIndex]?.id && !pausedIdsRef.current.has(item.id)) {
         safelyPlay(player);
+      } else {
+        safelyPause(player);
       }
     });
 
     Object.keys(videoRefs.current).forEach((id) => {
       if (nextIds.has(id)) return;
       releaseVideoPlayer(id);
+      bumpPlayerVersion((version) => version + 1);
       setPlaybackMap((prev) => {
         if (!(id in prev)) return prev;
         const next = { ...prev };
@@ -866,6 +943,8 @@ export default function VideoScreen() {
             initialNumToRender={2}
             maxToRenderPerBatch={2}
             showsVerticalScrollIndicator={false}
+            refreshing={refreshing}
+            onRefresh={refreshVideos}
             onViewableItemsChanged={onViewableItemsChanged}
             viewabilityConfig={{ itemVisiblePercentThreshold: 75 }}
             getItemLayout={(_, index) => ({ length: pageHeight, offset: pageHeight * index, index })}

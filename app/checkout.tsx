@@ -1,11 +1,11 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useFeedback } from '@/components/app-feedback';
+import { SkeletonImage } from '@/components/skeleton-image';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { readAddressItems, type AddressItem } from '@/lib/address-book';
@@ -250,7 +250,7 @@ export default function CheckoutScreen() {
                 <View style={styles.shopHeader}>
                   <View style={styles.shopAvatar}>
                     {group.shopAvatarUrl ? (
-                      <Image source={{ uri: group.shopAvatarUrl }} style={styles.shopAvatarImage} contentFit="cover" />
+                      <SkeletonImage source={{ uri: group.shopAvatarUrl }} style={styles.shopAvatarImage} contentFit="cover" />
                     ) : (
                       <DefaultShopIcon width={20} height={20} />
                     )}
@@ -261,7 +261,7 @@ export default function CheckoutScreen() {
                 {group.items.map((item) => (
                   <View key={item.key} style={styles.productRow}>
                     <View style={styles.productImage}>
-                      {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.imagePhoto} contentFit="cover" /> : <PictureIcon width={44} height={44} color="#C6CBD3" />}
+                      {item.imageUrl ? <SkeletonImage source={{ uri: item.imageUrl }} style={styles.imagePhoto} contentFit="cover" /> : <PictureIcon width={44} height={44} color="#C6CBD3" />}
                     </View>
                     <View style={styles.productInfo}>
                       <ThemedText numberOfLines={1} style={styles.productTitle}>{item.name}</ThemedText>

@@ -182,6 +182,7 @@ export default function AddressListScreen() {
     }
     setAddresses(await saveAddressItem(next, editing?.id));
     setFormVisible(false);
+    feedback.toast(editing ? '地址已保存' : '地址已添加', { tone: 'success' });
   }
 
   async function recognizeAddress() {
@@ -224,7 +225,10 @@ export default function AddressListScreen() {
       confirmLabel: '删除',
       danger: true,
     });
-    if (ok) setAddresses(await deleteAddressItem(item.id));
+    if (ok) {
+      setAddresses(await deleteAddressItem(item.id));
+      feedback.toast('地址已删除', { tone: 'success' });
+    }
   }
 
   async function copyAddress(item: AddressItem) {
@@ -234,6 +238,7 @@ export default function AddressListScreen() {
   async function makeDefault(item: AddressItem) {
     if (item.isDefault) return;
     setAddresses(await setDefaultAddressItem(item.id));
+    feedback.toast('已设为默认地址', { tone: 'success' });
   }
 
   async function pickOrderAddress(item: AddressItem) {
@@ -250,7 +255,7 @@ export default function AddressListScreen() {
         },
         item,
       );
-      feedback.toast('收货地址已修改');
+      feedback.toast('收货地址已修改', { tone: 'success' });
       router.back();
     } catch (error) {
       feedback.toast(error instanceof Error ? error.message : '修改地址失败');

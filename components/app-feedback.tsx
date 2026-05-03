@@ -23,6 +23,7 @@ type ToastState = {
   message: string;
   actionLabel?: string;
   onAction?: () => void;
+  tone?: 'default' | 'success' | 'danger';
 };
 
 type FeedbackValue = {
@@ -144,7 +145,12 @@ export function AppFeedbackProvider({ children }: { children: ReactNode }) {
         onRequestClose={() => setToastState(null)}>
         <View pointerEvents="box-none" style={styles.toastRoot}>
           {toastState ? (
-            <View style={styles.toastBubble}>
+            <View style={[styles.toastBubble, toastState.tone === 'success' && styles.toastBubbleSuccess, toastState.tone === 'danger' && styles.toastBubbleDanger]}>
+              {toastState.tone === 'success' ? (
+                <View style={styles.toastIcon}>
+                  <Text style={styles.toastIconText}>✓</Text>
+                </View>
+              ) : null}
               <Text style={styles.toastText}>{toastState.message}</Text>
               {toastState.actionLabel ? (
                 <Pressable
@@ -210,6 +216,26 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 12,
     backgroundColor: 'rgba(0,0,0,0.82)',
+  },
+  toastBubbleSuccess: {
+    backgroundColor: 'rgba(22,125,74,0.92)',
+  },
+  toastBubbleDanger: {
+    backgroundColor: 'rgba(190,38,51,0.92)',
+  },
+  toastIcon: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  toastIconText: {
+    color: '#167D4A',
+    fontSize: 14,
+    fontWeight: '900',
+    lineHeight: 18,
   },
   toastText: {
     flexShrink: 1,

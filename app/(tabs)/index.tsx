@@ -1,11 +1,13 @@
-import { Image } from 'expo-image';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppActivityIndicator } from '@/components/app-loading';
+import { useFeedback } from '@/components/app-feedback';
+import { SkeletonImage } from '@/components/skeleton-image';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
@@ -75,6 +77,7 @@ type ProfileNoteResponse = {
 
 const GAP = 8;
 const H_PADDING = 10;
+const VIDEO_THUMB_CACHE_KEY = '@home_video_thumbs_v1';
 const tabs = ['关注', '发现', '附近'] as const;
 type HomeTab = (typeof tabs)[number];
 
@@ -185,8 +188,17 @@ function buildFallbackFeed(likedIds: Set<string>) {
   return fallbackFeedItems.map((item) => toFallbackFeedItem(item, likedIds));
 }
 
+function stableLayoutTall(id: string) {
+  let hash = 0;
+  for (let index = 0; index < id.length; index += 1) {
+    hash = (hash * 31 + id.charCodeAt(index)) >>> 0;
+  }
+  return hash % 3 !== 1;
+}
+
 export default function HomeScreen() {
   const router = useRouter();
+  const feedback = useFeedback();
   const { user } = useAuth();
   const [items, setItems] = useState<HomeFeedItem[]>([]);
   const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
@@ -197,22 +209,51 @@ export default function HomeScreen() {
   const [videoThumbs, setVideoThumbs] = useState<Record<string, string>>({});
   const [activeTab, setActiveTab] = useState<HomeTab>('发现');
   const thumbPendingRef = useRef<Set<string>>(new Set());
+  const showDevelopingPanel = activeTab === '附近';
 
   useEffect(() => {
     let disposed = false;
-    const targets = items.filter((item) => item.contentType === 'video' && item.videoUri && !videoThumbs[item.id] && !thumbPendingRef.current.has(item.id));
+    AsyncStorage.getItem(VIDEO_THUMB_CACHE_KEY)
+      .then((raw) => {
+        if (disposed || !raw) return;
+        const parsed = JSON.parse(raw) as Record<string, string>;
+        if (parsed && typeof parsed === 'object') setVideoThumbs(parsed);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const targets = items.filter(
+      (item) =>
+        item.contentType === 'video' &&
+        item.videoUri &&
+        !item.imageUri &&
+        !videoThumbs[item.videoUri] &&
+        !thumbPendingRef.current.has(item.videoUri),
+    );
     if (!targets.length) return;
 
     targets.forEach((item) => {
-      thumbPendingRef.current.add(item.id);
+      const videoUri = item.videoUri!;
+      thumbPendingRef.current.add(videoUri);
       VideoThumbnails.getThumbnailAsync(item.videoUri!, { time: 100, quality: 0.7 })
         .then(({ uri }) => {
           if (disposed || !uri) return;
-          setVideoThumbs((prev) => (prev[item.id] ? prev : { ...prev, [item.id]: uri }));
+          setVideoThumbs((prev) => {
+            if (prev[videoUri]) return prev;
+            const next = { ...prev, [videoUri]: uri };
+            void AsyncStorage.setItem(VIDEO_THUMB_CACHE_KEY, JSON.stringify(next)).catch(() => undefined);
+            return next;
+          });
         })
         .catch(() => undefined)
         .finally(() => {
-          thumbPendingRef.current.delete(item.id);
+          thumbPendingRef.current.delete(videoUri);
         });
     });
 
@@ -222,6 +263,14 @@ export default function HomeScreen() {
   }, [items, videoThumbs]);
 
   const loadHomeFeed = useCallback(async (isRefresh = false) => {
+    if (activeTab === '附近') {
+      setItems([]);
+      setError(null);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
     if (isRefresh) setRefreshing(true);
     else setLoading(true);
 
@@ -255,7 +304,7 @@ export default function HomeScreen() {
         );
         feedResult = postResults.flatMap((res) => (Array.isArray(res.result?.data) ? res.result.data : []));
       } else {
-        const { result } = await postPublicJson<HomeNoteDto[]>('/index', { init: true, scope: activeTab === '附近' ? 'nearby' : 'discover' });
+        const { result } = await postPublicJson<HomeNoteDto[]>('/index', { init: true, scope: 'discover' });
         feedResult = Array.isArray(result) ? result : [];
       }
 
@@ -336,7 +385,7 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ThemedView style={styles.root}>
         <View style={styles.topBar}>
-          <Pressable style={styles.searchBtn} onPress={() => router.push('/search')}>
+          <Pressable style={styles.searchBtn} onPress={() => feedback.toast('该功能尚未开发')}>
             <ScanIcon width={24} height={24} color="#2C2C2C" />
           </Pressable>
           <View style={styles.tabsNav}>
@@ -355,69 +404,76 @@ export default function HomeScreen() {
           </Pressable>
         </View>
 
-        <FlatList
-          data={items}
-          keyExtractor={(item, index) => `${item.id}-${index}`}
-          numColumns={2}
-          columnWrapperStyle={styles.columnWrap}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          refreshing={refreshing}
-          onRefresh={() => void loadHomeFeed(true)}
-          ListEmptyComponent={listEmpty}
-          renderItem={({ item, index }) => {
-            const tall = index % 3 !== 1;
-            const pending = pendingIds.includes(item.id);
-            const displayImageUri = item.contentType === 'video' ? (videoThumbs[item.id] ?? item.imageUri) : item.imageUri;
-            const LikeIcon = item.liked ? LikedIcon : UnlikedIcon;
+        {showDevelopingPanel ? (
+          <View style={styles.developingPanel}>
+            <ThemedText style={styles.developingTitle}>附近功能正在开发中</ThemedText>
+            <ThemedText style={styles.developingText}>这里之后会展示附近的内容和动态</ThemedText>
+          </View>
+        ) : (
+          <FlatList
+            data={items}
+            keyExtractor={(item) => item.id}
+            numColumns={2}
+            columnWrapperStyle={styles.columnWrap}
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+            refreshing={refreshing}
+            onRefresh={() => void loadHomeFeed(true)}
+            ListEmptyComponent={listEmpty}
+            renderItem={({ item }) => {
+              const tall = stableLayoutTall(item.id);
+              const pending = pendingIds.includes(item.id);
+              const displayImageUri = item.contentType === 'video' ? (item.imageUri ?? (item.videoUri ? videoThumbs[item.videoUri] : undefined)) : item.imageUri;
+              const LikeIcon = item.liked ? LikedIcon : UnlikedIcon;
 
-            return (
-              <Pressable
-                style={styles.cardWrap}
-                onPress={() => {
-                  if (item.contentType === 'video') {
-                    router.push({ pathname: '/(tabs)/video', params: { id: item.rawId } });
-                    return;
-                  }
-                  router.push({ pathname: '/note/[id]', params: { id: item.rawId } });
-                }}>
-                <ThemedView style={styles.card}>
-                  {displayImageUri ? (
-                    <Image source={{ uri: displayImageUri }} style={[styles.cardImage, tall ? styles.cardImageTall : styles.cardImageShort]} contentFit="cover" />
-                  ) : (
-                    <View style={[styles.cardImage, tall ? styles.cardImageTall : styles.cardImageShort, styles.imageFallback]} />
-                  )}
-                  {item.contentType === 'video' ? (
-                    <View style={styles.videoBadge}>
-                      <ThemedText style={styles.videoBadgeText}>▶</ThemedText>
-                    </View>
-                  ) : null}
-                  <View style={styles.cardBody}>
-                    <ThemedText numberOfLines={2} style={styles.cardTitle}>{item.title}</ThemedText>
-                    {item.brief ? <ThemedText numberOfLines={2} style={styles.cardBrief}>{item.brief}</ThemedText> : null}
-                    <View style={styles.cardInfo}>
-                      <View style={styles.authorRow}>
-                        <Image source={avatarSource(item.authorAvatar)} style={styles.authorAvatar} contentFit="cover" />
-                        <ThemedText numberOfLines={1} style={styles.authorName}>{item.authorName}</ThemedText>
+              return (
+                <Pressable
+                  style={styles.cardWrap}
+                  onPress={() => {
+                    if (item.contentType === 'video') {
+                      router.push({ pathname: '/(tabs)/video', params: { id: item.rawId } });
+                      return;
+                    }
+                    router.push({ pathname: '/note/[id]', params: { id: item.rawId } });
+                  }}>
+                  <ThemedView style={styles.card}>
+                    {displayImageUri ? (
+                      <SkeletonImage source={{ uri: displayImageUri }} style={[styles.cardImage, tall ? styles.cardImageTall : styles.cardImageShort]} contentFit="cover" cachePolicy="memory-disk" />
+                    ) : (
+                      <View style={[styles.cardImage, tall ? styles.cardImageTall : styles.cardImageShort, styles.imageFallback]} />
+                    )}
+                    {item.contentType === 'video' ? (
+                      <View style={styles.videoBadge}>
+                        <ThemedText style={styles.videoBadgeText}>▶</ThemedText>
                       </View>
-                      <Pressable
-                        hitSlop={8}
-                        disabled={pending}
-                        style={styles.likeWrap}
-                        onPress={(event) => {
-                          event.stopPropagation();
-                          void toggleLike(item.id);
-                        }}>
-                        <LikeIcon width={15} height={15} color={item.liked ? '#FF4D6D' : '#6C737F'} />
-                        <ThemedText style={[styles.likes, item.liked && styles.likesActive, pending && styles.likesDisabled]}>{item.likes}</ThemedText>
-                      </Pressable>
+                    ) : null}
+                    <View style={styles.cardBody}>
+                      <ThemedText numberOfLines={2} style={styles.cardTitle}>{item.title}</ThemedText>
+                      {item.brief ? <ThemedText numberOfLines={2} style={styles.cardBrief}>{item.brief}</ThemedText> : null}
+                      <View style={styles.cardInfo}>
+                        <View style={styles.authorRow}>
+                          <SkeletonImage source={avatarSource(item.authorAvatar)} style={styles.authorAvatar} contentFit="cover" cachePolicy="memory-disk" />
+                          <ThemedText numberOfLines={1} style={styles.authorName}>{item.authorName}</ThemedText>
+                        </View>
+                        <Pressable
+                          hitSlop={8}
+                          disabled={pending}
+                          style={styles.likeWrap}
+                          onPress={(event) => {
+                            event.stopPropagation();
+                            void toggleLike(item.id);
+                          }}>
+                          <LikeIcon width={15} height={15} color={item.liked ? '#FF4D6D' : '#6C737F'} />
+                          <ThemedText style={[styles.likes, item.liked && styles.likesActive, pending && styles.likesDisabled]}>{item.likes}</ThemedText>
+                        </Pressable>
+                      </View>
                     </View>
-                  </View>
-                </ThemedView>
-              </Pressable>
-            );
-          }}
-        />
+                  </ThemedView>
+                </Pressable>
+              );
+            }}
+          />
+        )}
       </ThemedView>
     </SafeAreaView>
   );
@@ -495,6 +551,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   videoBadgeText: { color: '#FFF', fontSize: 12, marginLeft: 2, lineHeight: 14 },
+  developingPanel: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+    paddingBottom: 72,
+    backgroundColor: '#FFFFFF',
+  },
+  developingTitle: { fontSize: 18, lineHeight: 24, color: '#20242B', fontWeight: '800', textAlign: 'center' },
+  developingText: { marginTop: 8, fontSize: 14, lineHeight: 20, color: '#8E8E93', textAlign: 'center' },
   stateBlock: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24, gap: 12, minHeight: 240 },
   stateText: { fontSize: 14, textAlign: 'center', color: '#8E8E93' },
   retryBtn: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingHorizontal: 18, paddingVertical: 10, borderColor: '#E5E5E5' },

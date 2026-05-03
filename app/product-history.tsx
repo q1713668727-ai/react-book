@@ -1,10 +1,10 @@
-import { Image } from 'expo-image';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { FlatList, Modal, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useFeedback } from '@/components/app-feedback';
+import { SkeletonImage } from '@/components/skeleton-image';
 import { AppActivityIndicator } from '@/components/app-loading';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -299,7 +299,7 @@ export default function ProductHistoryScreen() {
                         }}>
                         <View style={styles.productImage}>
                           {product.imageUrl ? (
-                            <Image source={{ uri: product.imageUrl }} style={styles.imagePhoto} contentFit="cover" />
+                            <SkeletonImage source={{ uri: product.imageUrl }} style={styles.imagePhoto} contentFit="cover" />
                           ) : (
                             <PictureIcon width={46} height={46} color="#C6CBD3" />
                           )}

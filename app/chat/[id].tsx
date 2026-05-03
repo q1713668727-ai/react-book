@@ -11,15 +11,16 @@ import {
   StyleSheet,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/auth-context';
 import { avatarSource } from '@/lib/avatar-source';
 import { messageReadKey, writeChatReadMarker } from '@/lib/chat-read-markers';
-import { connectChatSocket } from '@/lib/chat-socket';
+import { connectChatSocket, type ChatSocketConnection } from '@/lib/chat-socket';
 import { createConversation, fetchConversation, fetchFollowStatus, fetchUserInfo, toggleFollow, type ConversationItem } from '@/lib/redbook-api';
 import EmojiIcon from '@/public/icon/biaoqing.svg';
 import MoreIcon from '@/public/icon/gengduo.svg';
@@ -214,12 +215,14 @@ export default function ChatDetailScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id: string; title?: string; url?: string }>();
   const { user } = useAuth();
-  const socketRef = useRef<WebSocket | null>(null);
+  const insets = useSafeAreaInsets();
+  const windowDimensions = useWindowDimensions();
+  const socketRef = useRef<ChatSocketConnection | null>(null);
   const burstRef = useRef<EmojiBurstHandle | null>(null);
   const readCountRef = useRef(0);
   const listRef = useRef<FlatList<ChatDisplayItem> | null>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const settleScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleScrollTimerRefs = useRef<ReturnType<typeof setTimeout>[]>([]);
   const rafRef = useRef<number | null>(null);
   const chatId = String(params.id || '');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -228,7 +231,7 @@ export default function ChatDetailScreen() {
   const [emojiMounted, setEmojiMounted] = useState(false);
   const [ready, setReady] = useState(false);
   const [sending, setSending] = useState(false);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [keyboardFrame, setKeyboardFrame] = useState<{ screenY: number; height: number } | null>(null);
   const [composerHeight, setComposerHeight] = useState(80);
   const [followed, setFollowed] = useState(false);
   const [followPending, setFollowPending] = useState(false);
@@ -240,6 +243,18 @@ export default function ChatDetailScreen() {
   const targetName = peerName;
   const targetAvatar = avatarSource(peerAvatarPath);
   const myAvatar = avatarSource(String(user?.url || ''));
+  const keyboardHeight = useMemo(() => {
+    if (!keyboardFrame) return 0;
+
+    const frameHeight = Number.isFinite(keyboardFrame.height) ? Math.max(0, keyboardFrame.height) : 0;
+    const screenY = Number.isFinite(keyboardFrame.screenY)
+      ? keyboardFrame.screenY
+      : windowDimensions.height - frameHeight;
+    const overlap = Math.max(0, windowDimensions.height - screenY);
+    const inset = overlap > 0 ? Math.min(overlap, frameHeight || overlap) : frameHeight;
+
+    return Math.max(0, inset - insets.bottom);
+  }, [insets.bottom, keyboardFrame, windowDimensions.height]);
 
   useEffect(() => {
     if (!user?.account || !chatId) return;
@@ -305,6 +320,36 @@ export default function ChatDetailScreen() {
   useEffect(() => {
     readCountRef.current = 0;
   }, [user?.account, chatId]);
+
+  const scrollToBottom = useCallback((animated = true) => {
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    settleScrollTimerRefs.current.forEach((timer) => clearTimeout(timer));
+    settleScrollTimerRefs.current = [];
+
+    const runScroll = (nextAnimated: boolean) => {
+      try {
+        listRef.current?.scrollToEnd({ animated: nextAnimated });
+      } catch {
+        // FlatList may briefly reject scrollToEnd before it has measured content.
+      }
+    };
+
+    rafRef.current = requestAnimationFrame(() => {
+      runScroll(animated);
+      rafRef.current = null;
+    });
+
+    [80, 180, 320].forEach((delay) => {
+      const timer = setTimeout(() => {
+        settleScrollTimerRefs.current = settleScrollTimerRefs.current.filter((item) => item !== timer);
+        runScroll(animated);
+      }, delay);
+      settleScrollTimerRefs.current.push(timer);
+    });
+  }, []);
 
   const ensureConversation = useCallback(async () => {
     if (!user?.account || !chatId || chatId === user.account) return false;
@@ -372,6 +417,7 @@ export default function ChatDetailScreen() {
         const ok = await ensureConversation();
         if (!ok || unmounted) return;
         const ws = connectChatSocket(user.account, (raw) => {
+          if (unmounted) return;
           const packet = raw as { type?: number; data?: { account?: string; target?: string; message?: HistoryMessage } };
           if (packet?.type !== 200 || !packet.data || !packet.data.message) return;
 
@@ -394,9 +440,20 @@ export default function ChatDetailScreen() {
           };
           if (next.type === 'emoji' && next.emoji) triggerEmojiBurst(next.emoji);
           setMessages((prev) => [...prev, next]);
+          scrollToBottom(true);
+        }, {
+          reconnect: true,
+          onOpen: () => {
+            if (!unmounted) setReady(true);
+          },
+          onClose: () => {
+            if (!unmounted) setReady(false);
+          },
+          onError: () => {
+            if (!unmounted) setReady(false);
+          },
         });
         socketRef.current = ws;
-        setReady(true);
       } catch {
         setReady(false);
       }
@@ -407,7 +464,7 @@ export default function ChatDetailScreen() {
       socketRef.current?.close();
       socketRef.current = null;
     };
-  }, [user?.account, chatId, ensureConversation, triggerEmojiBurst]);
+  }, [user?.account, chatId, ensureConversation, scrollToBottom, triggerEmojiBurst]);
 
   useEffect(() => {
     if (!user?.account || !chatId || chatId === user.account) {
@@ -428,46 +485,41 @@ export default function ChatDetailScreen() {
   }, [user?.account, chatId]);
 
   useEffect(() => {
-    const showSub = Keyboard.addListener('keyboardDidShow', (event) => {
-      setKeyboardHeight(event.endCoordinates.height);
-    });
-    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
-      setKeyboardHeight(0);
-    });
+    const updateKeyboardFrame = (event: { endCoordinates?: { height?: number; screenY?: number } }) => {
+      const height = Math.max(0, Number(event.endCoordinates?.height || 0));
+      const screenY = Number(event.endCoordinates?.screenY);
+      setKeyboardFrame({
+        height,
+        screenY: Number.isFinite(screenY) ? screenY : windowDimensions.height - height,
+      });
+    };
+    const hideKeyboardFrame = () => {
+      setKeyboardFrame(null);
+    };
+    const showSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow', updateKeyboardFrame);
+    const didShowSub = Platform.OS === 'ios' ? Keyboard.addListener('keyboardDidShow', updateKeyboardFrame) : null;
+    const hideSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', hideKeyboardFrame);
+    const didHideSub = Platform.OS === 'ios' ? Keyboard.addListener('keyboardDidHide', hideKeyboardFrame) : null;
 
     return () => {
       showSub.remove();
+      didShowSub?.remove();
       hideSub.remove();
+      didHideSub?.remove();
     };
-  }, []);
+  }, [windowDimensions.height]);
 
   const canSend = useMemo(() => text.trim().length > 0 && !sending && ready, [text, sending, ready]);
-  const displayMessages = useMemo(() => toDisplayMessages(messages), [messages, timeTick]);
+  const displayMessages = useMemo(() => {
+    void timeTick;
+    return toDisplayMessages(messages);
+  }, [messages, timeTick]);
   const messagesComposerPadding = useMemo(
     () => ({
       paddingBottom: composerHeight + keyboardHeight + CHAT_SCROLL_BOTTOM_GAP,
     }),
     [composerHeight, keyboardHeight]
   );
-
-  const scrollToBottom = useCallback((animated = true) => {
-    if (rafRef.current != null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-    if (settleScrollTimerRef.current) {
-      clearTimeout(settleScrollTimerRef.current);
-      settleScrollTimerRef.current = null;
-    }
-    rafRef.current = requestAnimationFrame(() => {
-      listRef.current?.scrollToEnd({ animated });
-      rafRef.current = null;
-    });
-    settleScrollTimerRef.current = setTimeout(() => {
-      listRef.current?.scrollToEnd({ animated: true });
-      settleScrollTimerRef.current = null;
-    }, 90);
-  }, []);
 
   useEffect(() => {
     if (!messages.length) return;
@@ -483,10 +535,8 @@ export default function ChatDetailScreen() {
         clearTimeout(scrollTimerRef.current);
         scrollTimerRef.current = null;
       }
-      if (settleScrollTimerRef.current) {
-        clearTimeout(settleScrollTimerRef.current);
-        settleScrollTimerRef.current = null;
-      }
+      settleScrollTimerRefs.current.forEach((timer) => clearTimeout(timer));
+      settleScrollTimerRefs.current = [];
       if (rafRef.current != null) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
@@ -519,7 +569,11 @@ export default function ChatDetailScreen() {
         },
       };
 
-      socketRef.current?.send(JSON.stringify(payload));
+      const delivered = socketRef.current?.send(JSON.stringify(payload)) ?? false;
+      if (!delivered) {
+        setReady(false);
+        return;
+      }
       const emoji = type === 'emoji' ? normalizeEmojiChar(value) : undefined;
       setMessages((prev) => [
         ...prev,

@@ -1,11 +1,11 @@
 import { Feather } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useFeedback } from '@/components/app-feedback';
+import { SkeletonImage } from '@/components/skeleton-image';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { applyMarketOrderRefund, fetchMarketOrders, type MarketOrder } from '@/lib/market-api';
@@ -84,8 +84,8 @@ export default function OrderRefundScreen() {
     setSubmitting(true);
     try {
       await applyMarketOrderRefund(order, { reason, receivedStatus });
-      feedback.toast('退款申请已提交');
       router.replace('/orders');
+      feedback.toast('退款申请已提交', { tone: 'success' });
     } catch (error) {
       feedback.toast(error instanceof Error ? error.message : '退款申请失败');
     } finally {
@@ -94,7 +94,7 @@ export default function OrderRefundScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safe} edges={['top']}>
+    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <Stack.Screen options={{ headerShown: false }} />
       <ThemedView style={styles.root}>
         <View style={styles.header}>
@@ -119,7 +119,7 @@ export default function OrderRefundScreen() {
                 </View>
                 <View style={styles.productRow}>
                   <View style={styles.productImage}>
-                    {first.imageUrl ? <Image source={{ uri: first.imageUrl }} style={styles.productPhoto} contentFit="cover" /> : <PictureIcon width={58} height={58} color="#D2D6DD" />}
+                    {first.imageUrl ? <SkeletonImage source={{ uri: first.imageUrl }} style={styles.productPhoto} contentFit="cover" /> : <PictureIcon width={58} height={58} color="#D2D6DD" />}
                   </View>
                   <View style={styles.productInfo}>
                     <ThemedText numberOfLines={2} style={styles.productTitle}>{first.name}</ThemedText>
