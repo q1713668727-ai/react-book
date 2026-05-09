@@ -1,14 +1,16 @@
 import { Feather } from '@expo/vector-icons';
 import { Stack, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
-import { useCallback, useMemo, useRef, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Keyboard, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useFeedback } from '@/components/app-feedback';
 import { SkeletonImage } from '@/components/skeleton-image';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { useAuth } from '@/contexts/auth-context';
+import { deleteCachedServiceSession, mergeServiceSessionList, readCachedServiceSessions, writeCachedServiceSessions } from '@/lib/chat-local-cache';
 import { deleteMarketServiceSession, fetchMarketServiceSessions, type MarketServiceSession } from '@/lib/market-api';
 import DefaultShopIcon from '@/public/icon/dp.svg';
 import PictureIcon from '@/public/icon/tupian.svg';
@@ -25,8 +27,9 @@ function formatTime(value: number) {
 
 function formatPreview(session: MarketServiceSession, content: string) {
   const text = String(content || '').trim();
-  if (!text) return '暂无消息';
   const last = session.messages[session.messages.length - 1];
+  if (last?.recalledAt) return last.sender === 'user' ? '[我] 撤回了一条消息' : '[客服] 撤回了一条消息';
+  if (!text) return '暂无消息';
   const prefix = last?.sender === 'merchant' ? '[客服] ' : last?.sender === 'ai' ? '[AI] ' : '[我] ';
   return `${prefix}${text}`;
 }
@@ -34,16 +37,29 @@ function formatPreview(session: MarketServiceSession, content: string) {
 export default function ProductServiceListScreen() {
   const router = useRouter();
   const feedback = useFeedback();
+  const { user } = useAuth();
+  const insets = useSafeAreaInsets();
+  const windowDimensions = useWindowDimensions();
   const [sessions, setSessions] = useState<MarketServiceSession[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
+  const [searchText, setSearchText] = useState('');
+  const [keyboardFrame, setKeyboardFrame] = useState<{ screenY: number; height: number } | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadSessions = useCallback(async (options?: { silent?: boolean }) => {
     if (!options?.silent) setLoading(true);
     try {
-      setSessions(await fetchMarketServiceSessions());
+      const cached = user?.account ? await readCachedServiceSessions(user.account) : [];
+      if (cached.length && !options?.silent) {
+        setSessions(cached);
+        setLoading(false);
+      }
+      const cloud = await fetchMarketServiceSessions();
+      const next = user?.account ? mergeServiceSessionList(cached, cloud) : cloud;
+      setSessions(next);
+      if (user?.account) await writeCachedServiceSessions(user.account, next);
     } catch (error) {
       if (!options?.silent) {
         setSessions([]);
@@ -52,7 +68,7 @@ export default function ProductServiceListScreen() {
     } finally {
       if (!options?.silent) setLoading(false);
     }
-  }, [feedback]);
+  }, [feedback, user?.account]);
 
   const refreshSessions = useCallback(async () => {
     setRefreshing(true);
@@ -78,9 +94,56 @@ export default function ProductServiceListScreen() {
     }, [loadSessions]),
   );
 
+  const keyboardHeight = useMemo(() => {
+    if (!keyboardFrame) return 0;
+
+    const frameHeight = Number.isFinite(keyboardFrame.height) ? Math.max(0, keyboardFrame.height) : 0;
+    const screenY = Number.isFinite(keyboardFrame.screenY)
+      ? keyboardFrame.screenY
+      : windowDimensions.height - frameHeight;
+    const overlap = Math.max(0, windowDimensions.height - screenY);
+    const inset = overlap > 0 ? Math.min(overlap, frameHeight || overlap) : frameHeight;
+
+    return Math.max(0, inset - insets.bottom);
+  }, [insets.bottom, keyboardFrame, windowDimensions.height]);
+  const effectiveKeyboardHeight = keyboardHeight;
+
+  useEffect(() => {
+    const updateKeyboardFrame = (event: { endCoordinates?: { height?: number; screenY?: number } }) => {
+      const height = Math.max(0, Number(event.endCoordinates?.height || 0));
+      const screenY = Number(event.endCoordinates?.screenY);
+      setKeyboardFrame({
+        height,
+        screenY: Number.isFinite(screenY) ? screenY : windowDimensions.height - height,
+      });
+    };
+    const hideKeyboardFrame = () => {
+      setKeyboardFrame(null);
+    };
+    const frameSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow', updateKeyboardFrame);
+    const didShowSub = Platform.OS === 'ios' ? Keyboard.addListener('keyboardDidShow', updateKeyboardFrame) : null;
+    const hideSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', hideKeyboardFrame);
+    const didHideSub = Platform.OS === 'ios' ? Keyboard.addListener('keyboardDidHide', hideKeyboardFrame) : null;
+
+    return () => {
+      frameSub.remove();
+      didShowSub?.remove();
+      hideSub.remove();
+      didHideSub?.remove();
+    };
+  }, [windowDimensions.height]);
+
   const rows = useMemo(
     () =>
       [...sessions]
+        .filter((session) => {
+          const keyword = searchText.trim().toLowerCase();
+          if (!keyword) return true;
+          const shop = String(session.shop || '').toLowerCase();
+          const product = String(session.product || '').toLowerCase();
+          const content = String(session.messages[session.messages.length - 1]?.content || '').toLowerCase();
+          return shop.includes(keyword) || product.includes(keyword) || content.includes(keyword);
+        })
         .sort((a, b) => {
           const ta = Number(a.messages[a.messages.length - 1]?.createdAt || a.updatedAt || 0);
           const tb = Number(b.messages[b.messages.length - 1]?.createdAt || b.updatedAt || 0);
@@ -90,7 +153,7 @@ export default function ProductServiceListScreen() {
         session,
         lastMessage: session.messages[session.messages.length - 1],
       })),
-    [sessions, sortOrder],
+    [sessions, sortOrder, searchText],
   );
 
   const handleDeleteSession = useCallback(
@@ -104,13 +167,14 @@ export default function ProductServiceListScreen() {
       if (!ok) return;
       try {
         await deleteMarketServiceSession(session.id);
+        if (user?.account) await deleteCachedServiceSession(user.account, session.id);
         setSessions((prev) => prev.filter((item) => item.id !== session.id));
         feedback.toast('聊天已删除');
       } catch (error) {
         feedback.toast(error instanceof Error ? error.message : '删除聊天失败');
       }
     },
-    [feedback],
+    [feedback, user?.account],
   );
 
   return (
@@ -133,10 +197,28 @@ export default function ProductServiceListScreen() {
             <Feather name="refresh-cw" size={20} color="#20242B" />
           </Pressable>
         </View>
+        <View style={styles.searchWrap}>
+          <Feather name="search" size={16} color="#8D939C" />
+          <TextInput
+            value={searchText}
+            onChangeText={setSearchText}
+            placeholder="搜索店铺、商品或消息"
+            placeholderTextColor="#A1A6AE"
+            style={styles.searchInput}
+            returnKeyType="search"
+          />
+          {searchText ? (
+            <Pressable hitSlop={8} onPress={() => setSearchText('')}>
+              <Feather name="x-circle" size={16} color="#9CA2AB" />
+            </Pressable>
+          ) : null}
+        </View>
 
         <ScrollView
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+          contentContainerStyle={[styles.content, { paddingBottom: 24 + effectiveKeyboardHeight }]}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refreshSessions()} />}>
           {rows.length ? (
             rows.map(({ session, lastMessage }) => (
@@ -219,6 +301,25 @@ const styles = StyleSheet.create({
   sortLabel: { fontSize: 12, color: '#6E7480', fontWeight: '800', marginRight: 2 },
   sortTriangles: { alignItems: 'center', justifyContent: 'center', width: 10, height: 14 },
   sortDown: { marginTop: -3, transform: [{ rotate: '180deg' }] },
+  searchWrap: {
+    height: 42,
+    marginHorizontal: 12,
+    marginTop: 10,
+    marginBottom: 8,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFFFFF',
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: '#20242B',
+    fontWeight: '600',
+    paddingVertical: 0,
+  },
   content: { paddingBottom: 24 },
   sessionRow: { minHeight: 92, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 13, backgroundColor: '#FFF', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#F1F2F4' },
   shopAvatar: { width: 48, height: 48, borderRadius: 24, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF4E3' },

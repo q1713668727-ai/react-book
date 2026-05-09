@@ -13,6 +13,13 @@ import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/auth-context';
 import { avatarSource } from '@/lib/avatar-source';
 import { ensureChatMessageTimeMarkers, type ChatMessageTimeMarker } from '@/lib/chat-message-times';
+import {
+  clearCachedConversationMessages,
+  deleteCachedConversation,
+  mergeConversationList,
+  readCachedConversationList,
+  writeCachedConversationList,
+} from '@/lib/chat-local-cache';
 import { latestMessageKey, readChatReadMarkers, writeConversationReadMarker, type ChatReadMarker } from '@/lib/chat-read-markers';
 import { connectChatSocket } from '@/lib/chat-socket';
 import { clearConversationMessages, deleteConversationMessages, fetchConversationList, type ConversationItem } from '@/lib/redbook-api';
@@ -51,6 +58,7 @@ function itemUnread(account: string, item: ConversationItem, markers: Record<str
 function itemPreview(item: ConversationItem) {
   const last = latestMessage(item);
   if (!last) return '[暂无消息]';
+  if (last.recalledAt) return last.mine ? '你撤回了一条消息' : '对方撤回了一条消息';
   const textType = String(last?.text?.type || '');
   if (textType === 'emoji') return String(last?.text?.message || '').trim() || '[表情]';
   if (textType === 'file') return '[文件]';
@@ -194,10 +202,17 @@ export default function ChatScreen() {
     }
     if (!options?.silent) setLoading(true);
     try {
+      const cached = await readCachedConversationList(user.account);
+      if (cached.length) {
+        setList(cached);
+        if (!options?.silent) setLoading(false);
+      }
       const result = await fetchConversationList(user.account);
-      const nextList = Array.isArray(result)
+      const cloudList = Array.isArray(result)
         ? result.filter((item) => String(item?.id || '').trim())
         : [];
+      const nextList = mergeConversationList(cached, cloudList);
+      await writeCachedConversationList(user.account, nextList);
       const nextMarkers = await readChatReadMarkers();
       const nextTimeMarkers = await ensureChatMessageTimeMarkers(user.account, nextList);
       setMarkers(nextMarkers);
@@ -285,6 +300,7 @@ export default function ChatScreen() {
     if (!ok) return;
     try {
       await clearConversationMessages(user.account, targetUser);
+      await clearCachedConversationMessages(user.account, targetUser);
       setList((current) =>
         current.map((entry) =>
           String(entry.id) === targetUser
@@ -315,6 +331,7 @@ export default function ChatScreen() {
     if (!ok) return;
     try {
       await deleteConversationMessages(user.account, targetUser);
+      await deleteCachedConversation(user.account, targetUser);
       setList((current) => current.filter((entry) => String(entry.id) !== targetUser));
       const nextHiddenIds = hiddenConversationIds.filter((id) => id !== targetUser);
       await saveHiddenConversationIds(nextHiddenIds);

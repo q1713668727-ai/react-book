@@ -1,7 +1,9 @@
 import { Image } from 'expo-image';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { type ComponentType, type Ref, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Clipboard from 'expo-clipboard';
 import {
   Animated,
   FlatList,
@@ -10,18 +12,21 @@ import {
   Pressable,
   StyleSheet,
   TextInput,
-  View,
+  UIManager,
   useWindowDimensions,
+  View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useFeedback } from '@/components/app-feedback';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/auth-context';
 import { avatarSource } from '@/lib/avatar-source';
+import { mergeConversation, readCachedConversation, writeCachedConversation } from '@/lib/chat-local-cache';
 import { messageReadKey, writeChatReadMarker } from '@/lib/chat-read-markers';
 import { connectChatSocket, type ChatSocketConnection } from '@/lib/chat-socket';
-import { createConversation, fetchConversation, fetchFollowStatus, fetchUserInfo, toggleFollow, type ConversationItem } from '@/lib/redbook-api';
+import { createConversation, fetchConversation, fetchFollowStatus, fetchUserInfo, recallConversationMessage, toggleFollow, type ConversationItem } from '@/lib/redbook-api';
 import EmojiIcon from '@/public/icon/biaoqing.svg';
 import MoreIcon from '@/public/icon/gengduo.svg';
 
@@ -30,6 +35,9 @@ type ChatMessage = {
   mine: boolean;
   date: string;
   type: 'text' | 'emoji';
+  actionKey: string;
+  recalledAt?: string | number;
+  recalledBy?: string;
   text?: string;
   emoji?: string;
 };
@@ -53,7 +61,33 @@ const weekdayLabels = ['周日', '周一', '周二', '周三', '周四', '周五
 const tenMinutes = 10 * 60 * 1000;
 const fallbackEmoji = '🙂';
 const HIDDEN_CONVERSATIONS_KEY_PREFIX = '@chat_hidden_conversations_v1:';
-const CHAT_SCROLL_BOTTOM_GAP = 28;
+const HIDDEN_MESSAGES_KEY_PREFIX = '@chat_hidden_messages_v1:';
+const CHAT_SCROLL_BOTTOM_GAP = 0;
+const KEYBOARD_COMPOSER_GAP = 8;
+const RECALL_LIMIT_MS = 60 * 1000;
+const CHAT_MORE_ACTIONS = [
+  { key: 'album', label: '相册', icon: 'image-outline' },
+  { key: 'camera', label: '拍照', icon: 'camera-outline' },
+  { key: 'call', label: '语音通话', icon: 'phone-outline' },
+  { key: 'note', label: '分享笔记', icon: 'note-text-outline' },
+  { key: 'sticky', label: '便利贴', icon: 'sticker-outline' },
+  { key: 'map', label: '地图', icon: 'map-outline' },
+  { key: 'checkin', label: '打卡', icon: 'calendar-check-outline', badge: 'NEW' },
+] as const;
+
+type MessageActionMenuState = {
+  message: ChatMessage;
+  x: number;
+  y: number;
+};
+
+type MessageLongPressEvent = {
+  nativeEvent?: {
+    pageX?: number;
+    pageY?: number;
+    target?: number | string;
+  };
+};
 
 type EmojiBurstHandle = {
   burst: (options?: { count?: number; intensity?: number; emojiIndex?: number }) => void;
@@ -109,15 +143,26 @@ function toChatMessages(history: ConversationItem['historyMessage']) {
   return (Array.isArray(history) ? history : []).map((item, index) => {
     const textType = item?.text?.type === 'emoji' ? 'emoji' : 'text';
     const date = historyMessageDate(item);
+    const actionKey = historyMessageActionKey(item);
     return {
-      id: `${date || 'd'}-${index}`,
+      id: actionKey || `${date || 'd'}-${index}`,
       mine: Boolean(item?.mine),
       date: String(date || ''),
       type: textType,
+      actionKey,
+      recalledAt: item?.recalledAt,
+      recalledBy: item?.recalledBy,
       text: textType === 'text' ? String(item?.text?.message || '') : undefined,
       emoji: textType === 'emoji' ? normalizeEmojiChar(item?.text?.message, item?.text?.url) : undefined,
     } as ChatMessage;
   });
+}
+
+function historyMessageActionKey(message: HistoryMessage | undefined) {
+  if (!message) return '';
+  const text = message.text || {};
+  const url = String(text.url || '').replace(/^images\/emoji\//, '');
+  return [parseMessageDate(historyMessageDate(message))?.getTime() || historyMessageDate(message) || '', text.type || '', text.message || '', url].join('|');
 }
 
 function parseMessageDate(value: unknown) {
@@ -214,6 +259,7 @@ function toDisplayMessages(messages: ChatMessage[]) {
 export default function ChatDetailScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id: string; title?: string; url?: string }>();
+  const feedback = useFeedback();
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const windowDimensions = useWindowDimensions();
@@ -223,12 +269,17 @@ export default function ChatDetailScreen() {
   const listRef = useRef<FlatList<ChatDisplayItem> | null>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settleScrollTimerRefs = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const listRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const listPositionedRef = useRef(false);
   const rafRef = useRef<number | null>(null);
+  const rootRef = useRef<View | null>(null);
   const chatId = String(params.id || '');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [text, setText] = useState('');
   const [showEmoji, setShowEmoji] = useState(false);
   const [emojiMounted, setEmojiMounted] = useState(false);
+  const [showMorePanel, setShowMorePanel] = useState(false);
+  const [morePanelMounted, setMorePanelMounted] = useState(false);
   const [ready, setReady] = useState(false);
   const [sending, setSending] = useState(false);
   const [keyboardFrame, setKeyboardFrame] = useState<{ screenY: number; height: number } | null>(null);
@@ -238,11 +289,16 @@ export default function ChatDetailScreen() {
   const [timeTick, setTimeTick] = useState(0);
   const [peerName, setPeerName] = useState(String(params.title || chatId || '聊天'));
   const [peerAvatarPath, setPeerAvatarPath] = useState(String(params.url || ''));
+  const [hiddenMessageKeys, setHiddenMessageKeys] = useState<string[]>([]);
+  const [actionMenu, setActionMenu] = useState<MessageActionMenuState | null>(null);
+  const [listPositioned, setListPositioned] = useState(false);
   const emojiAnim = useRef(new Animated.Value(0)).current;
+  const morePanelAnim = useRef(new Animated.Value(0)).current;
 
   const targetName = peerName;
   const targetAvatar = avatarSource(peerAvatarPath);
   const myAvatar = avatarSource(String(user?.url || ''));
+  const hiddenMessagesStorageKey = user?.account && chatId ? `${HIDDEN_MESSAGES_KEY_PREFIX}${user.account}:${chatId}` : '';
   const keyboardHeight = useMemo(() => {
     if (!keyboardFrame) return 0;
 
@@ -255,6 +311,9 @@ export default function ChatDetailScreen() {
 
     return Math.max(0, inset - insets.bottom);
   }, [insets.bottom, keyboardFrame, windowDimensions.height]);
+  const effectiveKeyboardHeight = keyboardHeight;
+  const composerBottom = effectiveKeyboardHeight + (keyboardFrame ? KEYBOARD_COMPOSER_GAP : 0);
+  const listBottomInset = composerHeight + composerBottom;
 
   useEffect(() => {
     if (!user?.account || !chatId) return;
@@ -277,6 +336,19 @@ export default function ChatDetailScreen() {
   }, [user?.account, chatId]);
 
   useEffect(() => {
+    if (!hiddenMessagesStorageKey) {
+      setHiddenMessageKeys([]);
+      return;
+    }
+    AsyncStorage.getItem(hiddenMessagesStorageKey)
+      .then((raw) => {
+        const parsed = raw ? JSON.parse(raw) : [];
+        setHiddenMessageKeys(Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : []);
+      })
+      .catch(() => setHiddenMessageKeys([]));
+  }, [hiddenMessagesStorageKey]);
+
+  useEffect(() => {
     setPeerName(String(params.title || chatId || '聊天'));
   }, [params.title, chatId]);
 
@@ -296,6 +368,9 @@ export default function ChatDetailScreen() {
 
   const openEmojiPanel = useCallback(() => {
     Keyboard.dismiss();
+    setShowMorePanel(false);
+    setMorePanelMounted(false);
+    morePanelAnim.setValue(0);
     setEmojiMounted(true);
     setShowEmoji(true);
     Animated.spring(emojiAnim, {
@@ -304,7 +379,7 @@ export default function ChatDetailScreen() {
       speed: 20,
       bounciness: 6,
     }).start();
-  }, [emojiAnim]);
+  }, [emojiAnim, morePanelAnim]);
 
   const closeEmojiPanel = useCallback(() => {
     setShowEmoji(false);
@@ -317,9 +392,53 @@ export default function ChatDetailScreen() {
     });
   }, [emojiAnim]);
 
+  const openMorePanel = useCallback(() => {
+    Keyboard.dismiss();
+    setShowEmoji(false);
+    setEmojiMounted(false);
+    emojiAnim.setValue(0);
+    setMorePanelMounted(true);
+    setShowMorePanel(true);
+    Animated.spring(morePanelAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 5,
+    }).start();
+  }, [emojiAnim, morePanelAnim]);
+
+  const closeMorePanel = useCallback(() => {
+    setShowMorePanel(false);
+    Animated.timing(morePanelAnim, {
+      toValue: 0,
+      duration: 160,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) setMorePanelMounted(false);
+    });
+  }, [morePanelAnim]);
+
+  const handleMoreAction = useCallback((label: string) => {
+    feedback.toast(`${label}功能暂未开放`);
+  }, [feedback]);
+
   useEffect(() => {
     readCountRef.current = 0;
+    listPositionedRef.current = false;
+    setListPositioned(false);
   }, [user?.account, chatId]);
+
+  const revealListAfterInitialScroll = useCallback(() => {
+    if (listPositionedRef.current) return;
+    if (listRevealTimerRef.current) clearTimeout(listRevealTimerRef.current);
+    listRevealTimerRef.current = setTimeout(() => {
+      requestAnimationFrame(() => {
+        listRevealTimerRef.current = null;
+        listPositionedRef.current = true;
+        setListPositioned(true);
+      });
+    }, 620);
+  }, []);
 
   const scrollToBottom = useCallback((animated = true) => {
     if (rafRef.current != null) {
@@ -331,9 +450,9 @@ export default function ChatDetailScreen() {
 
     const runScroll = (nextAnimated: boolean) => {
       try {
-        listRef.current?.scrollToEnd({ animated: nextAnimated });
+        listRef.current?.scrollToOffset({ offset: 0, animated: nextAnimated });
       } catch {
-        // FlatList may briefly reject scrollToEnd before it has measured content.
+        // FlatList may briefly reject scrolling before it has measured content.
       }
     };
 
@@ -342,7 +461,7 @@ export default function ChatDetailScreen() {
       rafRef.current = null;
     });
 
-    [80, 180, 320].forEach((delay) => {
+    [60, 160, 320, 520].forEach((delay) => {
       const timer = setTimeout(() => {
         settleScrollTimerRefs.current = settleScrollTimerRefs.current.filter((item) => item !== timer);
         runScroll(animated);
@@ -351,8 +470,116 @@ export default function ChatDetailScreen() {
     });
   }, []);
 
+  const persistHistoryMessage = useCallback(async (message: HistoryMessage, options?: { title?: string; avatar?: string }) => {
+    if (!user?.account || !chatId) return;
+    const cached = await readCachedConversation(user.account, chatId);
+    const next = mergeConversation(cached, {
+      ...(cached || {}),
+      id: chatId,
+      title: options?.title || cached?.title || targetName,
+      url: options?.avatar || cached?.url || String(peerAvatarPath || params.url || ''),
+      historyMessage: [...(cached?.historyMessage || []), message],
+    });
+    if (next) await writeCachedConversation(user.account, chatId, next);
+  }, [chatId, params.url, peerAvatarPath, targetName, user?.account]);
+
+  const persistConversationMessages = useCallback(async (nextMessages: ChatMessage[]) => {
+    if (!user?.account || !chatId) return;
+    const cached = await readCachedConversation(user.account, chatId);
+    if (!cached) return;
+    const byKey = new Map(nextMessages.map((message) => [message.actionKey, message]));
+    const nextHistory = (cached.historyMessage || []).map((item) => {
+      const action = byKey.get(historyMessageActionKey(item));
+      if (!action) return item;
+      return {
+        ...item,
+        recalledAt: action.recalledAt,
+        recalledBy: action.recalledBy,
+      };
+    });
+    await writeCachedConversation(user.account, chatId, { ...cached, historyMessage: nextHistory });
+  }, [chatId, user?.account]);
+
+  const messageTextForCopy = useCallback((message: ChatMessage) => {
+    if (message.recalledAt) return '';
+    if (message.type === 'emoji') return message.emoji || '';
+    return message.text || '';
+  }, []);
+
+  const canRecallMessage = useCallback((message: ChatMessage) => {
+    const sentAt = parseMessageDate(message.date)?.getTime() || 0;
+    const delta = Date.now() - sentAt;
+    return message.mine && !message.recalledAt && sentAt > 0 && delta <= RECALL_LIMIT_MS;
+  }, []);
+
+  const openMessageActions = useCallback((message: ChatMessage, event: MessageLongPressEvent) => {
+    if (message.recalledAt) return;
+    const fallbackX = Number(event.nativeEvent?.pageX || windowDimensions.width / 2);
+    const fallbackY = Number(event.nativeEvent?.pageY || windowDimensions.height / 2);
+    const target = Number(event.nativeEvent?.target || 0);
+
+    rootRef.current?.measureInWindow((rootX, rootY) => {
+      const showAt = (pageX: number, pageY: number) => {
+        setActionMenu({ message, x: pageX - rootX, y: pageY - rootY });
+      };
+
+      if (Number.isFinite(target) && target > 0) {
+        UIManager.measure(target, (_x, _y, width, _height, pageX, pageY) => {
+          showAt(pageX + width / 2, pageY);
+        });
+        return;
+      }
+
+      showAt(fallbackX, fallbackY);
+    });
+  }, [windowDimensions.height, windowDimensions.width]);
+
+  const hideMessageLocally = useCallback(async (message: ChatMessage) => {
+    setActionMenu(null);
+    if (!message.actionKey) return;
+    const next = Array.from(new Set([...hiddenMessageKeys, message.actionKey]));
+    setHiddenMessageKeys(next);
+    if (hiddenMessagesStorageKey) await AsyncStorage.setItem(hiddenMessagesStorageKey, JSON.stringify(next));
+  }, [hiddenMessageKeys, hiddenMessagesStorageKey]);
+
+  const copyMessageText = useCallback(async (message: ChatMessage) => {
+    const value = messageTextForCopy(message);
+    setActionMenu(null);
+    if (!value) return;
+    await Clipboard.setStringAsync(value);
+    feedback.toast('复制成功', { tone: 'success' });
+  }, [feedback, messageTextForCopy]);
+
+  const recallMessage = useCallback(async (message: ChatMessage) => {
+    if (!user?.account || !chatId || !canRecallMessage(message)) {
+      await hideMessageLocally(message);
+      return;
+    }
+    setActionMenu(null);
+    try {
+      const res = await recallConversationMessage({ account: user.account, target: chatId, messageKey: message.actionKey });
+      const recalledAt = res.result?.recalledAt || new Date().toISOString();
+      setMessages((current) => {
+        const next = current.map((item) => (item.actionKey === message.actionKey ? { ...item, recalledAt, recalledBy: user.account } : item));
+        void persistConversationMessages(next);
+        return next;
+      });
+    } catch {
+      // If the one-minute window has already passed on the server, fall back to local delete.
+      await hideMessageLocally(message);
+    }
+  }, [canRecallMessage, chatId, hideMessageLocally, persistConversationMessages, user?.account]);
+
   const ensureConversation = useCallback(async () => {
     if (!user?.account || !chatId || chatId === user.account) return false;
+
+    const cached = await readCachedConversation(user.account, chatId);
+    if (cached?.historyMessage?.length) {
+      if (cached.title) setPeerName(cached.title);
+      if (cached.url || cached.avatar) setPeerAvatarPath(String(cached.url || cached.avatar || ''));
+      setMessages(toChatMessages(cached.historyMessage));
+      scrollToBottom(false);
+    }
 
     const response = await fetchConversation({ account: user.account, target: chatId });
     const latestTitle = String(response.result?.title || '').trim();
@@ -370,7 +597,11 @@ export default function ChatDetailScreen() {
       })
       .catch(() => undefined);
 
-    const history = toChatMessages(response.result?.historyMessage);
+    const mergedConversation = mergeConversation(cached, response.result || null);
+    if (mergedConversation) {
+      await writeCachedConversation(user.account, chatId, mergedConversation);
+    }
+    const history = toChatMessages(mergedConversation?.historyMessage || response.result?.historyMessage);
     setMessages(history);
     const latest = response.result?.historyMessage?.[response.result.historyMessage.length - 1];
     readCountRef.current = Math.max(readCountRef.current, Number(response.result?.read || 0));
@@ -406,7 +637,7 @@ export default function ChatDetailScreen() {
       },
     });
     return true;
-  }, [user?.account, user?.name, user?.url, chatId, params.url, targetName]);
+  }, [user?.account, user?.name, user?.url, chatId, params.url, targetName, scrollToBottom]);
 
   useEffect(() => {
     if (!user?.account || !chatId) return;
@@ -431,13 +662,17 @@ export default function ChatDetailScreen() {
           readCountRef.current += 1;
           void writeChatReadMarker(user.account, chatId, messageReadKey(data), readCountRef.current);
           const next: ChatMessage = {
-            id: `${Date.now()}-${Math.random()}`,
+            id: historyMessageActionKey(data) || `${Date.now()}-${Math.random()}`,
             mine: !Boolean(incomingAccount === chatId),
             date: receivedAt,
             type: data.text?.type === 'emoji' ? 'emoji' : 'text',
+            actionKey: historyMessageActionKey(data),
+            recalledAt: data.recalledAt,
+            recalledBy: data.recalledBy,
             text: data.text?.type === 'text' ? String(data.text.message || '') : undefined,
             emoji: data.text?.type === 'emoji' ? normalizeEmojiChar(data.text?.message, data.text?.url) : undefined,
           };
+          void persistHistoryMessage({ ...data, mine: false });
           if (next.type === 'emoji' && next.emoji) triggerEmojiBurst(next.emoji);
           setMessages((prev) => [...prev, next]);
           scrollToBottom(true);
@@ -464,7 +699,7 @@ export default function ChatDetailScreen() {
       socketRef.current?.close();
       socketRef.current = null;
     };
-  }, [user?.account, chatId, ensureConversation, scrollToBottom, triggerEmojiBurst]);
+  }, [user?.account, chatId, ensureConversation, persistHistoryMessage, scrollToBottom, triggerEmojiBurst]);
 
   useEffect(() => {
     if (!user?.account || !chatId || chatId === user.account) {
@@ -496,13 +731,13 @@ export default function ChatDetailScreen() {
     const hideKeyboardFrame = () => {
       setKeyboardFrame(null);
     };
-    const showSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow', updateKeyboardFrame);
+    const frameSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow', updateKeyboardFrame);
     const didShowSub = Platform.OS === 'ios' ? Keyboard.addListener('keyboardDidShow', updateKeyboardFrame) : null;
     const hideSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', hideKeyboardFrame);
     const didHideSub = Platform.OS === 'ios' ? Keyboard.addListener('keyboardDidHide', hideKeyboardFrame) : null;
 
     return () => {
-      showSub.remove();
+      frameSub.remove();
       didShowSub?.remove();
       hideSub.remove();
       didHideSub?.remove();
@@ -512,22 +747,29 @@ export default function ChatDetailScreen() {
   const canSend = useMemo(() => text.trim().length > 0 && !sending && ready, [text, sending, ready]);
   const displayMessages = useMemo(() => {
     void timeTick;
-    return toDisplayMessages(messages);
-  }, [messages, timeTick]);
+    const hidden = new Set(hiddenMessageKeys);
+    return toDisplayMessages(messages.filter((message) => !hidden.has(message.actionKey)));
+  }, [hiddenMessageKeys, messages, timeTick]);
+  const invertedDisplayMessages = useMemo(() => [...displayMessages].reverse(), [displayMessages]);
   const messagesComposerPadding = useMemo(
     () => ({
-      paddingBottom: composerHeight + keyboardHeight + CHAT_SCROLL_BOTTOM_GAP,
+      paddingBottom: CHAT_SCROLL_BOTTOM_GAP,
     }),
-    [composerHeight, keyboardHeight]
+    []
   );
 
   useEffect(() => {
-    if (!messages.length) return;
+    if (!displayMessages.length) {
+      listPositionedRef.current = true;
+      setListPositioned(true);
+      return;
+    }
     if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
 
     scrollTimerRef.current = setTimeout(() => {
       scrollTimerRef.current = null;
-      scrollToBottom(true);
+      scrollToBottom(false);
+      revealListAfterInitialScroll();
     }, 80);
 
     return () => {
@@ -541,8 +783,16 @@ export default function ChatDetailScreen() {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
+      if (listRevealTimerRef.current) {
+        clearTimeout(listRevealTimerRef.current);
+        listRevealTimerRef.current = null;
+      }
     };
-  }, [composerHeight, keyboardHeight, messages.length, scrollToBottom]);
+  }, [displayMessages.length, revealListAfterInitialScroll, scrollToBottom]);
+
+  useEffect(() => {
+    scrollToBottom(false);
+  }, [composerBottom, composerHeight, scrollToBottom, windowDimensions.height]);
 
   useEffect(() => {
     if (!messages.length) return;
@@ -575,13 +825,16 @@ export default function ChatDetailScreen() {
         return;
       }
       const emoji = type === 'emoji' ? normalizeEmojiChar(value) : undefined;
+      void persistHistoryMessage(payload.message);
+      const actionKey = historyMessageActionKey(payload.message);
       setMessages((prev) => [
         ...prev,
         {
-          id: `${Date.now()}-${Math.random()}`,
+          id: actionKey || `${Date.now()}-${Math.random()}`,
           mine: true,
           date: sentAt,
           type,
+          actionKey,
           text: type === 'text' ? value : undefined,
           emoji,
         },
@@ -652,7 +905,7 @@ export default function ChatDetailScreen() {
           ),
         }}
       />
-      <ThemedView style={styles.root}>
+      <ThemedView ref={rootRef} style={styles.root}>
         {EmojiBurstView ? (
           <EmojiBurstView
             ref={burstRef}
@@ -665,18 +918,28 @@ export default function ChatDetailScreen() {
             style={styles.emojiBurstLayer}
           />
         ) : null}
-        {showEmoji ? (
-          <Pressable style={[styles.emojiBackdrop, { bottom: keyboardHeight + composerHeight }]} onPress={closeEmojiPanel} />
+        {showEmoji || showMorePanel ? (
+          <Pressable
+            style={[styles.emojiBackdrop, { bottom: composerBottom + composerHeight }]}
+            onPress={() => {
+              closeEmojiPanel();
+              closeMorePanel();
+            }}
+          />
         ) : null}
         <FlatList
           ref={listRef}
-          style={styles.messages}
+          style={[styles.messages, { marginBottom: listBottomInset, opacity: listPositioned ? 1 : 0 }]}
           contentContainerStyle={[styles.messagesContent, messagesComposerPadding]}
-          data={displayMessages}
+          data={invertedDisplayMessages}
+          inverted
           keyExtractor={(item) => item.id}
           keyboardShouldPersistTaps="handled"
           onLayout={() => scrollToBottom(false)}
-          onContentSizeChange={() => scrollToBottom(true)}
+          onContentSizeChange={() => {
+            scrollToBottom(false);
+            revealListAfterInitialScroll();
+          }}
           renderItem={({ item }) => {
             if (item.kind === 'time') {
               return (
@@ -687,17 +950,27 @@ export default function ChatDetailScreen() {
             }
 
             const message = item.message;
+            if (message.recalledAt) {
+              return (
+                <View style={styles.recalledRow}>
+                  <ThemedText style={styles.recalledText}>{message.mine ? '你撤回了一条消息' : '对方撤回了一条消息'}</ThemedText>
+                </View>
+              );
+            }
             return (
               <View key={message.id} style={[styles.msgRow, message.mine ? styles.msgRowMine : styles.msgRowYou]}>
                 {message.mine ? null : <Image source={targetAvatar} style={styles.avatar} contentFit="cover" />}
 
-                <View style={[styles.bubble, message.mine ? styles.bubbleMine : styles.bubbleYou]}>
+                <Pressable
+                  delayLongPress={260}
+                  onLongPress={(event) => openMessageActions(message, event)}
+                  style={[styles.bubble, message.mine ? styles.bubbleMine : styles.bubbleYou]}>
                   {message.type === 'emoji' ? (
                     <ThemedText style={styles.emojiText}>{message.emoji || fallbackEmoji}</ThemedText>
                   ) : (
                     <ThemedText style={message.mine ? styles.bubbleMineText : styles.bubbleYouText}>{message.text}</ThemedText>
                   )}
-                </View>
+                </Pressable>
 
                 {message.mine ? <Image source={myAvatar} style={styles.avatar} contentFit="cover" /> : null}
               </View>
@@ -705,8 +978,34 @@ export default function ChatDetailScreen() {
           }}
         />
 
+        {actionMenu ? (
+          <Pressable style={styles.actionBackdrop} onPress={() => setActionMenu(null)}>
+            <View
+              style={[
+                styles.messageActionMenu,
+                {
+                  left: Math.max(14, Math.min(actionMenu.x - 72, windowDimensions.width - 158)),
+                  top: Math.max(12, actionMenu.y - 56),
+                },
+              ]}>
+              <Pressable style={styles.messageActionItem} onPress={() => void copyMessageText(actionMenu.message)}>
+                <ThemedText style={styles.messageActionIcon}>▣</ThemedText>
+                <ThemedText style={styles.messageActionText}>复制</ThemedText>
+              </Pressable>
+              <Pressable
+                style={styles.messageActionItem}
+                onPress={() => void (canRecallMessage(actionMenu.message) ? recallMessage(actionMenu.message) : hideMessageLocally(actionMenu.message))}>
+                <ThemedText style={styles.messageActionIcon}>{canRecallMessage(actionMenu.message) ? '↩' : '⌫'}</ThemedText>
+                <ThemedText style={styles.messageActionText}>{canRecallMessage(actionMenu.message) ? '撤回' : '删除'}</ThemedText>
+              </Pressable>
+              <View style={styles.messageActionArrow} />
+            </View>
+          </Pressable>
+        ) : null}
+
         <View
-          style={[styles.composer, { bottom: keyboardHeight }]}
+          pointerEvents={listPositioned ? 'auto' : 'none'}
+          style={[styles.composer, { bottom: composerBottom, opacity: listPositioned ? 1 : 0 }]}
           onLayout={(event) => {
             setComposerHeight(event.nativeEvent.layout.height);
             scrollToBottom(false);
@@ -759,12 +1058,52 @@ export default function ChatDetailScreen() {
               onChangeText={setText}
               placeholder={ready ? '输入消息' : '连接中...'}
               editable={ready && !sending}
-              onFocus={closeEmojiPanel}
+              onFocus={() => {
+                closeEmojiPanel();
+                closeMorePanel();
+              }}
             />
+            <Pressable
+              style={[styles.moreToggle, showMorePanel && styles.moreToggleActive]}
+              onPress={() => (showMorePanel ? closeMorePanel() : openMorePanel())}>
+              <MaterialCommunityIcons name="plus" size={30} color={showMorePanel ? '#FF2442' : '#2F343B'} />
+            </Pressable>
             <Pressable style={[styles.sendBtn, !canSend && styles.sendBtnDisabled]} disabled={!canSend} onPress={() => void sendMessage('text', text.trim())}>
               <ThemedText style={styles.sendText}>{sending ? '发送中' : '发送'}</ThemedText>
             </Pressable>
           </View>
+
+          {morePanelMounted ? (
+            <Animated.View
+              style={[
+                styles.morePanel,
+                {
+                  opacity: morePanelAnim,
+                  transform: [
+                    {
+                      translateY: morePanelAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [16, 0],
+                      }),
+                    },
+                  ],
+                },
+              ]}>
+              {CHAT_MORE_ACTIONS.map((item) => (
+                <Pressable key={item.key} style={styles.moreAction} onPress={() => handleMoreAction(item.label)}>
+                  <View style={styles.moreIconBox}>
+                    <MaterialCommunityIcons name={item.icon} size={30} color="#303033" />
+                    {'badge' in item && item.badge ? (
+                      <View style={styles.moreBadge}>
+                        <ThemedText style={styles.moreBadgeText}>{item.badge}</ThemedText>
+                      </View>
+                    ) : null}
+                  </View>
+                  <ThemedText style={styles.moreActionText}>{item.label}</ThemedText>
+                </Pressable>
+              ))}
+            </Animated.View>
+          ) : null}
         </View>
       </ThemedView>
     </SafeAreaView>
@@ -794,6 +1133,8 @@ const styles = StyleSheet.create({
   messagesContent: { padding: 12, gap: 12 },
   timeRow: { alignItems: 'center', justifyContent: 'center', paddingVertical: 2 },
   timeText: { color: '#9AA0AA', fontSize: 12, lineHeight: 16 },
+  recalledRow: { alignItems: 'center', justifyContent: 'center', paddingVertical: 4 },
+  recalledText: { fontSize: 13, color: '#9AA0AA', fontWeight: '600' },
   msgRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   msgRowMine: { justifyContent: 'flex-end' },
   msgRowYou: { justifyContent: 'flex-start' },
@@ -805,6 +1146,31 @@ const styles = StyleSheet.create({
   bubbleMineText: { color: '#0B2A12', fontSize: 16, lineHeight: 22 },
   bubbleYouText: { color: '#111', fontSize: 16, lineHeight: 22 },
   emojiText: { fontSize: 34, lineHeight: 38 },
+  actionBackdrop: { ...StyleSheet.absoluteFillObject, zIndex: 10 },
+  messageActionMenu: {
+    position: 'absolute',
+    minWidth: 144,
+    height: 48,
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    backgroundColor: '#24242A',
+  },
+  messageActionItem: { width: 58, alignItems: 'center', justifyContent: 'center', gap: 2 },
+  messageActionIcon: { fontSize: 16, color: '#F5F5F8', lineHeight: 18, fontWeight: '800' },
+  messageActionText: { fontSize: 11, color: '#FFFFFF', fontWeight: '700' },
+  messageActionArrow: {
+    position: 'absolute',
+    left: '50%',
+    bottom: -6,
+    marginLeft: -6,
+    width: 12,
+    height: 12,
+    backgroundColor: '#24242A',
+    transform: [{ rotate: '45deg' }],
+  },
   composer: {
     position: 'absolute',
     left: 0,
@@ -831,6 +1197,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     fontSize: 15,
   },
+  moreToggle: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+  moreToggleActive: { backgroundColor: '#FFEFF2' },
   sendBtn: { minWidth: 64, height: 34, borderRadius: 8, backgroundColor: '#FF2442', alignItems: 'center', justifyContent: 'center' },
   sendBtnDisabled: { opacity: 0.5 },
   sendText: { color: '#FFF', fontSize: 14, fontWeight: '600' },
@@ -845,4 +1213,37 @@ const styles = StyleSheet.create({
   },
   emojiBtn: { width: '12.5%', alignItems: 'center', justifyContent: 'center', paddingVertical: 6 },
   emojiBtnText: { fontSize: 30, lineHeight: 34 },
+  morePanel: {
+    minHeight: 214,
+    paddingHorizontal: 18,
+    paddingTop: 22,
+    paddingBottom: 18,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    rowGap: 24,
+    backgroundColor: '#FFFFFF',
+  },
+  moreAction: { width: '25%', alignItems: 'center', gap: 8 },
+  moreIconBox: {
+    width: 58,
+    height: 58,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F4F4F5',
+  },
+  moreActionText: { fontSize: 13, color: '#8A8A8F', fontWeight: '700' },
+  moreBadge: {
+    position: 'absolute',
+    right: -10,
+    top: -9,
+    minWidth: 36,
+    height: 18,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+    backgroundColor: '#FF2442',
+  },
+  moreBadgeText: { fontSize: 10, lineHeight: 14, color: '#FFF', fontWeight: '900' },
 });

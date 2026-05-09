@@ -27,6 +27,7 @@
       },
       "usesCleartextTraffic": true,
       "permissions": ["INTERNET"],
+      "softwareKeyboardLayoutMode": "resize",
       "predictiveBackGestureEnabled": false,
       "package": "com.anonymous.reactdemo"
     },

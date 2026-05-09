@@ -1,7 +1,10 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { type ComponentType, type Ref, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Image } from 'expo-image';
-import { Animated, FlatList, Keyboard, Platform, Pressable, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Clipboard from 'expo-clipboard';
+import { Animated, FlatList, Keyboard, Platform, Pressable, StyleSheet, TextInput, UIManager, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useFeedback } from '@/components/app-feedback';
@@ -9,7 +12,13 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { resolveMediaUrl } from '@/constants/api';
 import { useAuth } from '@/contexts/auth-context';
-import { fetchMarketServiceSession, sendMarketServiceMessage, type MarketServiceMessage, type MarketServiceSession } from '@/lib/market-api';
+import {
+  mergeServiceSession,
+  readCachedServiceSession,
+  readCachedServiceSessions,
+  writeCachedServiceSession,
+} from '@/lib/chat-local-cache';
+import { fetchMarketServiceSession, recallMarketServiceMessage, sendMarketServiceMessage, type MarketServiceMessage, type MarketServiceSession } from '@/lib/market-api';
 import BackIcon from '@/public/icon/fanhuijiantou.svg';
 import EmojiIcon from '@/public/icon/biaoqing.svg';
 import PictureIcon from '@/public/icon/tupian.svg';
@@ -54,7 +63,33 @@ if (Platform.OS !== 'web') {
 const emojiList = ['😀', '😂', '😍', '🥳', '😎', '🤔', '😭', '😡', '👍', '👏', '🙏', '🔥', '🎉', '💯', '❤️', '✨'];
 const weekdayLabels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const tenMinutes = 10 * 60 * 1000;
-const SERVICE_SCROLL_BOTTOM_GAP = 28;
+const SERVICE_SCROLL_BOTTOM_GAP = 0;
+const KEYBOARD_COMPOSER_GAP = 8;
+const RECALL_LIMIT_MS = 60 * 1000;
+const HIDDEN_SERVICE_MESSAGES_KEY_PREFIX = '@market_service_hidden_messages_v1:';
+const SERVICE_MORE_ACTIONS = [
+  { key: 'album', label: '相册', icon: 'image-outline' },
+  { key: 'camera', label: '拍照', icon: 'camera-outline' },
+  { key: 'call', label: '语音通话', icon: 'phone-outline' },
+  { key: 'note', label: '分享笔记', icon: 'note-text-outline' },
+  { key: 'sticky', label: '便利贴', icon: 'sticker-outline' },
+  { key: 'map', label: '地图', icon: 'map-outline' },
+  { key: 'checkin', label: '打卡', icon: 'calendar-check-outline', badge: 'NEW' },
+] as const;
+
+type MessageActionMenuState = {
+  message: MarketServiceMessage;
+  x: number;
+  y: number;
+};
+
+type MessageLongPressEvent = {
+  nativeEvent?: {
+    pageX?: number;
+    pageY?: number;
+    target?: number | string;
+  };
+};
 
 type ServiceDisplayItem =
   | {
@@ -198,20 +233,33 @@ export default function ProductServiceScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
   const [emojiMounted, setEmojiMounted] = useState(false);
+  const [showMorePanel, setShowMorePanel] = useState(false);
+  const [morePanelMounted, setMorePanelMounted] = useState(false);
   const [showQuickSendCard, setShowQuickSendCard] = useState(true);
   const [keyboardFrame, setKeyboardFrame] = useState<{ screenY: number; height: number } | null>(null);
   const [composerHeight, setComposerHeight] = useState(116);
+  const [hiddenMessageIds, setHiddenMessageIds] = useState<string[]>([]);
+  const [actionMenu, setActionMenu] = useState<MessageActionMenuState | null>(null);
+  const [listPositioned, setListPositioned] = useState(false);
   const emojiAnim = useRef(new Animated.Value(0)).current;
+  const morePanelAnim = useRef(new Animated.Value(0)).current;
 
   const burstRef = useRef<EmojiBurstHandle | null>(null);
   const seenIdsRef = useRef<Set<number>>(new Set());
   const listRef = useRef<FlatList<ServiceDisplayItem> | null>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settleScrollTimerRefs = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const listRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const listPositionedRef = useRef(false);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadSeqRef = useRef(0);
   const rafRef = useRef<number | null>(null);
-  const displayMessages = useMemo(() => toDisplayMessages(messages), [messages]);
+  const rootRef = useRef<View | null>(null);
+  const displayMessages = useMemo(() => {
+    const hidden = new Set(hiddenMessageIds);
+    return toDisplayMessages(messages.filter((message) => !hidden.has(String(message.id))));
+  }, [hiddenMessageIds, messages]);
+  const invertedDisplayMessages = useMemo(() => [...displayMessages].reverse(), [displayMessages]);
 
   const shopName = session?.shop || String(params.shop || '店铺客服');
   const productName = String(session?.product || params.name || '商品咨询');
@@ -227,6 +275,7 @@ export default function ProductServiceScreen() {
   const orderStatusText = orderStatus ? `${orderStatus}${refundStatus ? `（${refundStatus}）` : ''}` : '';
   const sendDesc = `店铺：${shopName}`;
   const productId = String(session?.productId || params.productId || '').trim();
+  const hiddenMessagesStorageKey = user?.account && session?.id ? `${HIDDEN_SERVICE_MESSAGES_KEY_PREFIX}${user.account}:${session.id}` : '';
   const keyboardHeight = useMemo(() => {
     if (!keyboardFrame) return 0;
 
@@ -239,6 +288,9 @@ export default function ProductServiceScreen() {
 
     return Math.max(0, inset - insets.bottom);
   }, [insets.bottom, keyboardFrame, windowDimensions.height]);
+  const effectiveKeyboardHeight = keyboardHeight;
+  const composerBottom = effectiveKeyboardHeight + (keyboardFrame ? KEYBOARD_COMPOSER_GAP : 0);
+  const listBottomInset = composerHeight + composerBottom;
 
   const triggerEmojiBurst = useCallback((emoji: string) => {
     const idx = emojiList.indexOf(emoji);
@@ -256,9 +308,9 @@ export default function ProductServiceScreen() {
 
     const runScroll = (nextAnimated: boolean) => {
       try {
-        listRef.current?.scrollToEnd({ animated: nextAnimated });
+        listRef.current?.scrollToOffset({ offset: 0, animated: nextAnimated });
       } catch {
-        // FlatList may briefly reject scrollToEnd before it has measured content.
+        // FlatList may briefly reject scrolling before it has measured content.
       }
     };
 
@@ -267,7 +319,7 @@ export default function ProductServiceScreen() {
       rafRef.current = null;
     });
 
-    [80, 180, 320].forEach((delay) => {
+    [60, 160, 320, 520].forEach((delay) => {
       const timer = setTimeout(() => {
         settleScrollTimerRefs.current = settleScrollTimerRefs.current.filter((item) => item !== timer);
         runScroll(animated);
@@ -276,10 +328,25 @@ export default function ProductServiceScreen() {
     });
   }, []);
 
+  const revealListAfterInitialScroll = useCallback(() => {
+    if (listPositionedRef.current) return;
+    if (listRevealTimerRef.current) clearTimeout(listRevealTimerRef.current);
+    listRevealTimerRef.current = setTimeout(() => {
+      requestAnimationFrame(() => {
+        listRevealTimerRef.current = null;
+        listPositionedRef.current = true;
+        setListPositioned(true);
+      });
+    }, 620);
+  }, []);
+
   const applySessionData = useCallback(
     (data: MarketServiceSession | null, options?: { silent?: boolean; burstForIncoming?: boolean }) => {
       if (!data) return;
       setSession(data);
+      if (user?.account) {
+        void writeCachedServiceSession(user.account, data);
+      }
       setMessages((prev) => {
         const next = Array.isArray(data.messages) ? data.messages : [];
         let hasNewIncoming = false;
@@ -306,20 +373,32 @@ export default function ProductServiceScreen() {
       });
       if (!options?.silent) setShowQuickSendCard(true);
     },
-    [scrollToBottom, triggerEmojiBurst],
+    [scrollToBottom, triggerEmojiBurst, user?.account],
   );
 
   const loadSession = useCallback(async (options?: { silent?: boolean; burstForIncoming?: boolean }) => {
     const seq = ++loadSeqRef.current;
     try {
+      let cached: MarketServiceSession | null = null;
+      if (user?.account && !options?.silent) {
+        const cachedList = await readCachedServiceSessions(user.account);
+        cached = cachedList.find((item) => {
+          const productMatch = params.productId ? String(item.productId || '') === String(params.productId) : true;
+          const shopMatch = params.shopId ? String(item.shopId || '') === String(params.shopId) : true;
+          return productMatch && shopMatch;
+        }) || null;
+        if (cached) applySessionData(cached, { silent: true });
+      }
       const data = await fetchMarketServiceSession({ productId: params.productId, shopId: params.shopId });
       if (seq !== loadSeqRef.current) return;
-      applySessionData(data || null, options);
+      const latestCached = user?.account && data?.id ? await readCachedServiceSession(user.account, data.id) : cached;
+      const merged = mergeServiceSession(latestCached, data || null);
+      applySessionData(merged, options);
     } catch (error) {
       if (seq !== loadSeqRef.current) return;
       if (!options?.silent) feedback.toast(error instanceof Error ? error.message : '客服会话加载失败');
     }
-  }, [applySessionData, feedback, params.productId, params.shopId]);
+  }, [applySessionData, feedback, params.productId, params.shopId, user?.account]);
 
   const refreshSession = useCallback(async () => {
     setRefreshing(true);
@@ -331,8 +410,23 @@ export default function ProductServiceScreen() {
   }, [loadSession]);
 
   useEffect(() => {
+    listPositionedRef.current = false;
+    setListPositioned(false);
     void loadSession();
   }, [loadSession]);
+
+  useEffect(() => {
+    if (!hiddenMessagesStorageKey) {
+      setHiddenMessageIds([]);
+      return;
+    }
+    AsyncStorage.getItem(hiddenMessagesStorageKey)
+      .then((raw) => {
+        const parsed = raw ? JSON.parse(raw) : [];
+        setHiddenMessageIds(Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : []);
+      })
+      .catch(() => setHiddenMessageIds([]));
+  }, [hiddenMessagesStorageKey]);
 
   useEffect(() => {
     let disposed = false;
@@ -370,13 +464,13 @@ export default function ProductServiceScreen() {
     const hideKeyboardFrame = () => {
       setKeyboardFrame(null);
     };
-    const showSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow', updateKeyboardFrame);
+    const frameSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow', updateKeyboardFrame);
     const didShowSub = Platform.OS === 'ios' ? Keyboard.addListener('keyboardDidShow', updateKeyboardFrame) : null;
     const hideSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', hideKeyboardFrame);
     const didHideSub = Platform.OS === 'ios' ? Keyboard.addListener('keyboardDidHide', hideKeyboardFrame) : null;
 
     return () => {
-      showSub.remove();
+      frameSub.remove();
       didShowSub?.remove();
       hideSub.remove();
       didHideSub?.remove();
@@ -385,6 +479,9 @@ export default function ProductServiceScreen() {
 
   const openEmojiPanel = useCallback(() => {
     Keyboard.dismiss();
+    setShowMorePanel(false);
+    setMorePanelMounted(false);
+    morePanelAnim.setValue(0);
     setEmojiMounted(true);
     setShowEmoji(true);
     Animated.spring(emojiAnim, {
@@ -393,7 +490,7 @@ export default function ProductServiceScreen() {
       speed: 20,
       bounciness: 6,
     }).start();
-  }, [emojiAnim]);
+  }, [emojiAnim, morePanelAnim]);
 
   const closeEmojiPanel = useCallback(() => {
     setShowEmoji(false);
@@ -406,10 +503,118 @@ export default function ProductServiceScreen() {
     });
   }, [emojiAnim]);
 
+  const openMorePanel = useCallback(() => {
+    Keyboard.dismiss();
+    setShowEmoji(false);
+    setEmojiMounted(false);
+    emojiAnim.setValue(0);
+    setMorePanelMounted(true);
+    setShowMorePanel(true);
+    Animated.spring(morePanelAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 5,
+    }).start();
+  }, [emojiAnim, morePanelAnim]);
+
+  const closeMorePanel = useCallback(() => {
+    setShowMorePanel(false);
+    Animated.timing(morePanelAnim, {
+      toValue: 0,
+      duration: 160,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) setMorePanelMounted(false);
+    });
+  }, [morePanelAnim]);
+
+  const handleMoreAction = useCallback((label: string) => {
+    feedback.toast(`${label}功能暂未开放`);
+  }, [feedback]);
+
+  const canRecallMessage = useCallback((message: MarketServiceMessage) => {
+    const delta = Date.now() - Number(message.createdAt || 0);
+    return message.sender === 'user' && !message.recalledAt && Number(message.createdAt || 0) > 0 && delta <= RECALL_LIMIT_MS;
+  }, []);
+
+  const messageTextForCopy = useCallback((message: MarketServiceMessage) => {
+    if (message.recalledAt) return '';
+    if (message.messageType === 'product') return String(message.content || getProductPayload(message.payload)?.name || '').trim();
+    return String(message.content || '').trim();
+  }, []);
+
+  const openMessageActions = useCallback((message: MarketServiceMessage, event: MessageLongPressEvent) => {
+    if (message.recalledAt) return;
+    const fallbackX = Number(event.nativeEvent?.pageX || windowDimensions.width / 2);
+    const fallbackY = Number(event.nativeEvent?.pageY || windowDimensions.height / 2);
+    const target = Number(event.nativeEvent?.target || 0);
+
+    rootRef.current?.measureInWindow((rootX, rootY) => {
+      const showAt = (pageX: number, pageY: number) => {
+        setActionMenu({ message, x: pageX - rootX, y: pageY - rootY });
+      };
+
+      if (Number.isFinite(target) && target > 0) {
+        UIManager.measure(target, (_x, _y, width, _height, pageX, pageY) => {
+          showAt(pageX + width / 2, pageY);
+        });
+        return;
+      }
+
+      showAt(fallbackX, fallbackY);
+    });
+  }, [windowDimensions.height, windowDimensions.width]);
+
+  const persistServiceMessages = useCallback((nextMessages: MarketServiceMessage[]) => {
+    if (user?.account && session) {
+      void writeCachedServiceSession(user.account, { ...session, messages: nextMessages, updatedAt: Date.now() });
+    }
+  }, [session, user?.account]);
+
+  const hideMessageLocally = useCallback(async (message: MarketServiceMessage) => {
+    setActionMenu(null);
+    const next = Array.from(new Set([...hiddenMessageIds, String(message.id)]));
+    setHiddenMessageIds(next);
+    if (hiddenMessagesStorageKey) await AsyncStorage.setItem(hiddenMessagesStorageKey, JSON.stringify(next));
+  }, [hiddenMessageIds, hiddenMessagesStorageKey]);
+
+  const copyMessageText = useCallback(async (message: MarketServiceMessage) => {
+    const value = messageTextForCopy(message);
+    setActionMenu(null);
+    if (!value) return;
+    await Clipboard.setStringAsync(value);
+    feedback.toast('复制成功', { tone: 'success' });
+  }, [feedback, messageTextForCopy]);
+
+  const recallMessage = useCallback(async (message: MarketServiceMessage) => {
+    if (!canRecallMessage(message)) {
+      await hideMessageLocally(message);
+      return;
+    }
+    setActionMenu(null);
+    try {
+      const recalled = await recallMarketServiceMessage(message.id);
+      setMessages((current) => {
+        const next = current.map((item) => (item.id === message.id ? { ...item, recalledAt: recalled?.recalledAt || Date.now() } : item));
+        persistServiceMessages(next);
+        return next;
+      });
+    } catch {
+      await hideMessageLocally(message);
+    }
+  }, [canRecallMessage, hideMessageLocally, persistServiceMessages]);
+
   useEffect(() => {
+    if (!displayMessages.length) {
+      listPositionedRef.current = true;
+      setListPositioned(true);
+      return;
+    }
     if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
     scrollTimerRef.current = setTimeout(() => {
-      scrollToBottom(true);
+      scrollToBottom(false);
+      revealListAfterInitialScroll();
       scrollTimerRef.current = null;
     }, 40);
     return () => {
@@ -423,8 +628,16 @@ export default function ProductServiceScreen() {
       }
       settleScrollTimerRefs.current.forEach((timer) => clearTimeout(timer));
       settleScrollTimerRefs.current = [];
+      if (listRevealTimerRef.current) {
+        clearTimeout(listRevealTimerRef.current);
+        listRevealTimerRef.current = null;
+      }
     };
-  }, [displayMessages.length, keyboardHeight, composerHeight, showEmoji, scrollToBottom]);
+  }, [displayMessages.length, revealListAfterInitialScroll, scrollToBottom]);
+
+  useEffect(() => {
+    scrollToBottom(false);
+  }, [composerBottom, composerHeight, scrollToBottom, windowDimensions.height]);
 
   async function handleSend(
     nextContent?: string,
@@ -441,7 +654,13 @@ export default function ProductServiceScreen() {
       const sent = await sendMarketServiceMessage(session.id, content, options);
       if (sent) {
         seenIdsRef.current.add(sent.id);
-        setMessages((current) => [...current, sent]);
+        setMessages((current) => {
+          const next = [...current, sent];
+          if (user?.account && session) {
+            void writeCachedServiceSession(user.account, { ...session, messages: next, updatedAt: sent.createdAt || Date.now() });
+          }
+          return next;
+        });
         scrollToBottom(true);
         void loadSession({ silent: true, burstForIncoming: true });
       }
@@ -511,7 +730,7 @@ export default function ProductServiceScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <Stack.Screen options={{ headerShown: false }} />
-      <ThemedView style={styles.root}>
+      <ThemedView ref={rootRef} style={styles.root}>
         {EmojiBurstView ? (
           <EmojiBurstView
             ref={burstRef}
@@ -524,8 +743,14 @@ export default function ProductServiceScreen() {
             style={styles.emojiBurstLayer}
           />
         ) : null}
-        {showEmoji ? (
-          <Pressable style={[styles.emojiBackdrop, { bottom: keyboardHeight + composerHeight }]} onPress={closeEmojiPanel} />
+        {showEmoji || showMorePanel ? (
+          <Pressable
+            style={[styles.emojiBackdrop, { bottom: composerBottom + composerHeight }]}
+            onPress={() => {
+              closeEmojiPanel();
+              closeMorePanel();
+            }}
+          />
         ) : null}
 
         <View style={styles.header}>
@@ -562,17 +787,22 @@ export default function ProductServiceScreen() {
 
         <FlatList
           ref={listRef}
-          style={[styles.chatList, { marginBottom: composerHeight }]}
-          data={displayMessages}
+          style={[styles.chatList, { marginBottom: listBottomInset, opacity: listPositioned ? 1 : 0 }]}
+          data={invertedDisplayMessages}
+          inverted
           keyExtractor={(item) => item.id}
           refreshing={refreshing}
           onRefresh={() => void refreshSession()}
           keyboardShouldPersistTaps="handled"
-          onContentSizeChange={() => scrollToBottom(true)}
+          onLayout={() => scrollToBottom(false)}
+          onContentSizeChange={() => {
+            scrollToBottom(false);
+            revealListAfterInitialScroll();
+          }}
           contentContainerStyle={[
             styles.chatContent,
             {
-              paddingBottom: keyboardHeight + SERVICE_SCROLL_BOTTOM_GAP,
+              paddingBottom: SERVICE_SCROLL_BOTTOM_GAP,
             },
           ]}
           renderItem={({ item }) => {
@@ -588,13 +818,20 @@ export default function ProductServiceScreen() {
             const mine = message.sender === 'user';
             const emojiOnly = isEmojiOnly(message.content || '');
             const productPayload = getProductPayload(message.payload);
+            if (message.recalledAt) {
+              return (
+                <View style={styles.recalledRow}>
+                  <ThemedText style={styles.recalledText}>{mine ? '你撤回了一条消息' : '对方撤回了一条消息'}</ThemedText>
+                </View>
+              );
+            }
             return (
               <View style={[styles.messageRow, mine && styles.messageRowMine]}>
                 {mine ? null : <View style={styles.agentAvatar}>{shopAvatarUrl ? <Image source={{ uri: shopAvatarUrl }} style={styles.agentAvatarImage} contentFit="cover" /> : null}</View>}
                 <View style={[styles.messageColumn, mine && styles.messageColumnMine, productPayload && styles.messageColumnProduct]}>
                   <ThemedText style={[styles.agentName, mine && styles.myName]}>{mine ? myName : message.sender === 'ai' ? `${shopName} AI` : `${shopName} 客服`}</ThemedText>
                   {productPayload ? (
-                    <View style={styles.productMsgBubble}>
+                    <Pressable delayLongPress={260} onLongPress={(event) => openMessageActions(message, event)} style={styles.productMsgBubble}>
                       {String(message.content || '').trim() ? <ThemedText style={styles.productLeadText}>{String(message.content || '').trim()}</ThemedText> : null}
                       <View style={styles.productCardInner}>
                         <View style={styles.productCardImageWrap}>
@@ -616,15 +853,15 @@ export default function ProductServiceScreen() {
                           {productPayload.orderTotal ? <ThemedText style={styles.productCardTotal}>实付：¥{productPayload.orderTotal}</ThemedText> : null}
                         </View>
                       </View>
-                    </View>
+                    </Pressable>
                   ) : (
-                    <View style={[styles.bubble, mine && styles.bubbleMine, emojiOnly && styles.bubbleEmoji]}>
+                    <Pressable delayLongPress={260} onLongPress={(event) => openMessageActions(message, event)} style={[styles.bubble, mine && styles.bubbleMine, emojiOnly && styles.bubbleEmoji]}>
                       {emojiOnly ? (
                         <ThemedText style={styles.emojiText}>{String(message.content || '').trim()}</ThemedText>
                       ) : (
                         <ThemedText style={[styles.bubbleText, mine && styles.bubbleMineText]}>{message.content}</ThemedText>
                       )}
-                    </View>
+                    </Pressable>
                   )}
                 </View>
                 {mine ? (
@@ -640,8 +877,34 @@ export default function ProductServiceScreen() {
           ListEmptyComponent={<View style={styles.emptyBox}><ThemedText style={styles.emptyText}>暂无消息</ThemedText></View>}
         />
 
+        {actionMenu ? (
+          <Pressable style={styles.actionBackdrop} onPress={() => setActionMenu(null)}>
+            <View
+              style={[
+                styles.messageActionMenu,
+                {
+                  left: Math.max(14, Math.min(actionMenu.x - 72, windowDimensions.width - 158)),
+                  top: Math.max(12, actionMenu.y - 56),
+                },
+              ]}>
+              <Pressable style={styles.messageActionItem} onPress={() => void copyMessageText(actionMenu.message)}>
+                <ThemedText style={styles.messageActionIcon}>▣</ThemedText>
+                <ThemedText style={styles.messageActionText}>复制</ThemedText>
+              </Pressable>
+              <Pressable
+                style={styles.messageActionItem}
+                onPress={() => void (canRecallMessage(actionMenu.message) ? recallMessage(actionMenu.message) : hideMessageLocally(actionMenu.message))}>
+                <ThemedText style={styles.messageActionIcon}>{canRecallMessage(actionMenu.message) ? '↩' : '⌫'}</ThemedText>
+                <ThemedText style={styles.messageActionText}>{canRecallMessage(actionMenu.message) ? '撤回' : '删除'}</ThemedText>
+              </Pressable>
+              <View style={styles.messageActionArrow} />
+            </View>
+          </Pressable>
+        ) : null}
+
         <View
-          style={[styles.bottomPanel, { bottom: keyboardHeight }]}
+          pointerEvents={listPositioned ? 'auto' : 'none'}
+          style={[styles.bottomPanel, { bottom: composerBottom, opacity: listPositioned ? 1 : 0 }]}
           onLayout={(event) => {
             setComposerHeight(event.nativeEvent.layout.height);
             scrollToBottom(false);
@@ -716,12 +979,52 @@ export default function ProductServiceScreen() {
               style={styles.input}
               returnKeyType="send"
               onSubmitEditing={() => void handleSend()}
-              onFocus={closeEmojiPanel}
+              onFocus={() => {
+                closeEmojiPanel();
+                closeMorePanel();
+              }}
             />
+            <Pressable
+              style={[styles.moreToggle, showMorePanel && styles.moreToggleActive]}
+              onPress={() => (showMorePanel ? closeMorePanel() : openMorePanel())}>
+              <MaterialCommunityIcons name="plus" size={30} color={showMorePanel ? '#FF2442' : '#2F343B'} />
+            </Pressable>
             <Pressable style={[styles.sendBtn, !String(inputText || '').trim() && styles.sendBtnDisabled]} onPress={() => void handleSend()}>
               <ThemedText style={styles.sendBtnText}>发送</ThemedText>
             </Pressable>
           </View>
+
+          {morePanelMounted ? (
+            <Animated.View
+              style={[
+                styles.morePanel,
+                {
+                  opacity: morePanelAnim,
+                  transform: [
+                    {
+                      translateY: morePanelAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [16, 0],
+                      }),
+                    },
+                  ],
+                },
+              ]}>
+              {SERVICE_MORE_ACTIONS.map((item) => (
+                <Pressable key={item.key} style={styles.moreAction} onPress={() => handleMoreAction(item.label)}>
+                  <View style={styles.moreIconBox}>
+                    <MaterialCommunityIcons name={item.icon} size={30} color="#303033" />
+                    {'badge' in item && item.badge ? (
+                      <View style={styles.moreBadge}>
+                        <ThemedText style={styles.moreBadgeText}>{item.badge}</ThemedText>
+                      </View>
+                    ) : null}
+                  </View>
+                  <ThemedText style={styles.moreActionText}>{item.label}</ThemedText>
+                </Pressable>
+              ))}
+            </Animated.View>
+          ) : null}
         </View>
       </ThemedView>
     </SafeAreaView>
@@ -775,6 +1078,8 @@ const styles = StyleSheet.create({
   chatContent: { paddingHorizontal: 14, paddingTop: 14, gap: 12 },
   timeRow: { alignItems: 'center', justifyContent: 'center', paddingVertical: 2 },
   timeText: { color: '#9AA0AA', fontSize: 12, lineHeight: 16 },
+  recalledRow: { alignItems: 'center', justifyContent: 'center', paddingVertical: 4 },
+  recalledText: { fontSize: 13, color: '#9AA0AA', fontWeight: '600' },
   messageRow: { width: '100%', flexDirection: 'row', alignItems: 'flex-start', gap: 9 },
   messageRowMine: { justifyContent: 'flex-end' },
   agentAvatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#8B5D39', overflow: 'hidden' },
@@ -833,6 +1138,31 @@ const styles = StyleSheet.create({
   productCardPrice: { marginTop: 2, fontSize: 18, color: '#11151C', fontWeight: '900' },
   productCardTotal: { fontSize: 12, color: '#5A616D', fontWeight: '700' },
   emojiText: { fontSize: 34, lineHeight: 38 },
+  actionBackdrop: { ...StyleSheet.absoluteFillObject, zIndex: 10 },
+  messageActionMenu: {
+    position: 'absolute',
+    minWidth: 144,
+    height: 48,
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    backgroundColor: '#24242A',
+  },
+  messageActionItem: { width: 58, alignItems: 'center', justifyContent: 'center', gap: 2 },
+  messageActionIcon: { fontSize: 16, color: '#F5F5F8', lineHeight: 18, fontWeight: '800' },
+  messageActionText: { fontSize: 11, color: '#FFFFFF', fontWeight: '700' },
+  messageActionArrow: {
+    position: 'absolute',
+    left: '50%',
+    bottom: -6,
+    marginLeft: -6,
+    width: 12,
+    height: 12,
+    backgroundColor: '#24242A',
+    transform: [{ rotate: '45deg' }],
+  },
   agentAvatarImageWrap: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#DCDDDF' },
   emptyBox: { minHeight: 220, alignItems: 'center', justifyContent: 'center' },
   emptyText: { color: '#8E8E93', fontSize: 14 },
@@ -877,6 +1207,8 @@ const styles = StyleSheet.create({
   inputRow: { height: 52, flexDirection: 'row', alignItems: 'center', gap: 10 },
   emojiToggle: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center' },
   input: { flex: 1, height: 40, borderRadius: 20, paddingHorizontal: 16, backgroundColor: '#F6F6F7', fontSize: 14, color: '#20242B' },
+  moreToggle: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+  moreToggleActive: { backgroundColor: '#FFEFF2' },
   sendBtn: { minWidth: 58, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14, backgroundColor: '#FF2442' },
   sendBtnDisabled: { backgroundColor: '#FFB6C1' },
   sendBtnText: { fontSize: 14, color: '#FFF', fontWeight: '800' },
@@ -892,4 +1224,37 @@ const styles = StyleSheet.create({
   },
   emojiBtn: { width: '12.5%', alignItems: 'center', justifyContent: 'center', paddingVertical: 6 },
   emojiBtnText: { fontSize: 30, lineHeight: 34 },
+  morePanel: {
+    minHeight: 214,
+    paddingHorizontal: 18,
+    paddingTop: 22,
+    paddingBottom: 18,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    rowGap: 24,
+    backgroundColor: '#FFFFFF',
+  },
+  moreAction: { width: '25%', alignItems: 'center', gap: 8 },
+  moreIconBox: {
+    width: 58,
+    height: 58,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F4F4F5',
+  },
+  moreActionText: { fontSize: 13, color: '#8A8A8F', fontWeight: '700' },
+  moreBadge: {
+    position: 'absolute',
+    right: -10,
+    top: -9,
+    minWidth: 36,
+    height: 18,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+    backgroundColor: '#FF2442',
+  },
+  moreBadgeText: { fontSize: 10, lineHeight: 14, color: '#FFF', fontWeight: '900' },
 });

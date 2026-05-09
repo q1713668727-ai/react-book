@@ -174,6 +174,7 @@ export type MarketServiceMessage = {
   sender: 'user' | 'merchant' | 'ai';
   messageType?: 'text' | 'product';
   content: string;
+  recalledAt?: number;
   payload?: {
     productId?: number;
     name?: string;
@@ -500,6 +501,21 @@ export async function sendMarketServiceMessage(
 export async function deleteMarketServiceSession(sessionId: number | string) {
   const { result } = await postJson<{ sessionId: number | string }>('/market/service/session/delete', { sessionId });
   return result;
+}
+
+export async function recallMarketServiceMessage(messageId: number | string) {
+  const { result } = await postJson<MarketServiceMessage>('/market/service/message/recall', { messageId });
+  return result
+    ? {
+        ...result,
+        payload: result.payload
+          ? {
+              ...result.payload,
+              imageUrl: normalizeMarketRootAsset(result.payload.imageUrl),
+            }
+          : null,
+      }
+    : result;
 }
 
 export async function reviewMarketOrderRefund(

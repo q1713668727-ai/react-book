@@ -21,6 +21,8 @@ export type ConversationItem = {
     updatedAt?: string | number;
     createTime?: string | number;
     createdAt?: string | number;
+    recalledAt?: string | number;
+    recalledBy?: string;
     mine?: boolean;
     text?: {
       type?: 'text' | 'emoji' | 'file' | string;
@@ -90,6 +92,10 @@ export async function clearConversationMessages(account: string, targetUser: str
 
 export async function deleteConversationMessages(account: string, targetUser: string) {
   return postJson('/deleteUser', { account, targetUser });
+}
+
+export async function recallConversationMessage(params: { account: string; target: string; messageKey: string }) {
+  return postJson<{ messageKey?: string; recalledAt?: string | number }>('/message/recall', params);
 }
 
 export async function fetchMoreMessage(params: { account: string; target: string; length: number }) {
